@@ -24,7 +24,7 @@ What is the values of the parameter B in the table?"""
     # and we can use the first few for warmup
     entries.sort(key=lambda x: len(x["files"]))
     for entry in entries:
-        req_data = load_qwen2_5_vl(question, entry["files"])            
+        req_data = load_qwen2_5_vl(question, entry["files"])
         prompts.append(
             {
                 "prompt": req_data.prompt,
@@ -32,7 +32,7 @@ What is the values of the parameter B in the table?"""
             }
         )
 
-    # use the engine args from the last entry == one with the most pages 
+    # use the engine args from the last entry == one with the most pages
     # since that will setup correct multimodal limits
     engine_args = asdict(req_data.engine_args) | {"seed": args.seed}
     llm = LLM(**engine_args)
@@ -45,7 +45,7 @@ What is the values of the parameter B in the table?"""
     for p in prompts:
         grouped_prompts[len(p["multi_modal_data"]["image"])].append(p)
     start_time = time.time()
-    for page_count,group in grouped_prompts.items():
+    for page_count, group in grouped_prompts.items():
         print(f"Running group with {page_count} pages")
         llm.generate(
             group,
@@ -53,8 +53,14 @@ What is the values of the parameter B in the table?"""
             lora_request=req_data.lora_requests,
         )
         max_self_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1 << 20)
-        max_children_usage = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / (1 << 20)
-        print(f"Peak memory usage: {max_self_usage} (self) + {max_children_usage} (children) GiB")
+        max_children_usage = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / (
+            1 << 20
+        )
+        total_memory_usage = max_self_usage + max_children_usage
+        print(
+            f"Peak memory usage: {max_self_usage:.02f} (self) + "
+            f"{max_children_usage:.02f} (children) = {total_memory_usage:.02f} GiB"
+        )
         print(f"Time: {time.time() - start_time} seconds")
         start_time = time.time()
 
@@ -68,18 +74,21 @@ What is the values of the parameter B in the table?"""
     )
     print(f"Time: {time.time() - start_time} seconds")
     total_score = 0
-    for i,o in enumerate(outputs):
+    score_markers = "😖😕😐😊😍"
+    print("Scoring answers: ", end="")
+    for i, o in enumerate(outputs):
         generated_text = o.outputs[0].text
         entry = entries[i]
-        expected_strings = [ str(entry[x]) for x in ["docid", "title", "needle" ] ] + [ str(entry['table'][1]) ]
+        expected_strings = [str(entry[x]) for x in ["docid", "title", "needle"]] + [
+            str(entry["table"][1])
+        ]
         score = 0
         for es in expected_strings:
             if es in generated_text:
                 score += 1
         total_score += score
-        print(f"Entry {i} output: {generated_text}, expected: {expected_strings}, score: {score * 100 // 4}%")
-    print(f"Average score: {total_score * 100 // (len(outputs) * 4)}%")
-
+        print(score_markers[score], end="")
+    print(f"\nAverage score: {total_score * 100 // (len(outputs) * 4)}%")
 
 
 if __name__ == "__main__":
