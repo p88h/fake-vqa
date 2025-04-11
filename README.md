@@ -77,6 +77,29 @@ python fakevqa_benchmark.py
 Options:
 - `--seed`: Set the random seed for reproducibility
 - `--num-pages` or `-n`: Maximum number of pages to use (choices: 4, 8, 16, 32, 64, 128, 256)
+- `--tag` or `-t`: Type of question to use (choices: simple, qa, summarize, all)
+- `--scenario` or `-s`: Benchmark scenario to run (choices: composite, grouped, mixed, throughput)
+
+#### Benchmark Scenarios
+
+- **Composite**: Runs a comprehensive benchmark with:
+  - Throughput test with simple questions
+  - Mixed test with QA questions & answer quality assessment 
+  - Mixed test with summarization
+- **Grouped**: Tests performance on documents grouped by page count
+- **Mixed**: Tests performance on a mix of different document sizes
+- **Throughput**: Tests both grouped and mixed scenarios for all question types
+
+#### Output Files
+
+The benchmark generates several output files:
+- `metrics_{scenario}_{tag}.csv`: Contains performance metrics including:
+  - Page count
+  - Number of prompts
+  - Run time
+  - Memory usage
+- `answers.json`: Contains the model's answers for QA questions
+- `summaries.json`: Contains the model's summaries for summarization tasks
 
 ## Project Structure
 
