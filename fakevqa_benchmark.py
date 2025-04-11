@@ -181,7 +181,7 @@ def throughput_scenario(entries, tag):
         all_metrics.extend(metrics1)
         _, metrics2 = mixed_benchmark(llm, sampling_params, lora_requests, prompts, t)
         all_metrics.extend(metrics2)
-    save_metrics(all_metrics, "mixed", tag)
+    save_metrics(all_metrics, "throughput", tag)
 
 def main(args):
     entries = generate_benchmark_dataset(max_pages=args.num_pages)
