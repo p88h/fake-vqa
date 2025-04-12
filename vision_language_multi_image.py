@@ -9,6 +9,7 @@ from argparse import Namespace
 from dataclasses import asdict
 from typing import NamedTuple, Optional
 
+from functools import cache
 from huggingface_hub import snapshot_download
 from PIL.Image import Image
 from transformers import AutoProcessor, AutoTokenizer
@@ -70,6 +71,9 @@ def load_aria(question: str, image_urls: list[str]) -> ModelRequestData:
         image_data=[fetch_image(url) for url in image_urls],
     )
 
+@cache
+def get_processor(model_name: str) -> AutoProcessor:
+    return AutoProcessor.from_pretrained(model_name, use_fast=True)
 
 def load_aya_vision(question: str, image_urls: list[str]) -> ModelRequestData:
     model_name = "CohereForAI/aya-vision-8b"
@@ -93,7 +97,7 @@ def load_aya_vision(question: str, image_urls: list[str]) -> ModelRequestData:
         ],
     }]
 
-    processor = AutoProcessor.from_pretrained(model_name)
+    processor = get_processor(model_name)
 
     prompt = processor.apply_chat_template(messages,
                                            tokenize=False,
@@ -152,7 +156,7 @@ def load_gemma3(question: str, image_urls: list[str]) -> ModelRequestData:
         ],
     }]
 
-    processor = AutoProcessor.from_pretrained(model_name)
+    processor = get_processor(model_name)
 
     prompt = processor.apply_chat_template(messages,
                                            tokenize=False,
@@ -313,7 +317,7 @@ def load_llama4(question: str, image_urls: list[str]) -> ModelRequestData:
         ],
     }]
 
-    processor = AutoProcessor.from_pretrained(model_name)
+    processor = get_processor(model_name)
 
     prompt = processor.apply_chat_template(messages,
                                            tokenize=False,
@@ -561,7 +565,7 @@ def load_qwen2_vl(question: str, image_urls: list[str]) -> ModelRequestData:
         ],
     }]
 
-    processor = AutoProcessor.from_pretrained(model_name)
+    processor = get_processor(model_name)
 
     prompt = processor.apply_chat_template(messages,
                                            tokenize=False,
@@ -577,6 +581,7 @@ def load_qwen2_vl(question: str, image_urls: list[str]) -> ModelRequestData:
         prompt=prompt,
         image_data=image_data,
     )
+
 
 
 def load_qwen2_5_vl(question: str, image_urls: list[str]) -> ModelRequestData:
@@ -622,7 +627,7 @@ def load_qwen2_5_vl(question: str, image_urls: list[str]) -> ModelRequestData:
         ],
     }]
 
-    processor = AutoProcessor.from_pretrained(model_name)
+    processor = get_processor(model_name)
 
     prompt = processor.apply_chat_template(messages,
                                            tokenize=False,
