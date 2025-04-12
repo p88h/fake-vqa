@@ -19,7 +19,20 @@ from vllm.multimodal.utils import fetch_image
 from vllm.utils import FlexibleArgumentParser
 
 QUESTION = "What is the content of each image?"
-IMAGE_URLS = [f"images/r{n:02d}.jpg" for n in range(1, 17)] * 4
+IMAGE_URLS = [
+    "https://upload.wikimedia.org/wikipedia/commons/d/da/2015_Kaczka_krzy%C5%BCowka_w_wodzie_%28samiec%29.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/7/77/002_The_lion_king_Snyggve_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/2/26/Ultramarine_Flycatcher_%28Ficedula_superciliaris%29_Naggar%2C_Himachal_Pradesh%2C_2013_%28cropped%29.JPG",
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Anim1754_-_Flickr_-_NOAA_Photo_Library_%281%29.jpg/2560px-Anim1754_-_Flickr_-_NOAA_Photo_Library_%281%29.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/d/d4/Starfish%2C_Caswell_Bay_-_geograph.org.uk_-_409413.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/6/69/Grapevinesnail_01.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0b/Texas_invasive_Musk_Thistle_1.jpg/1920px-Texas_invasive_Musk_Thistle_1.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/Huskiesatrest.jpg/2880px-Huskiesatrest.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Orange_tabby_cat_sitting_on_fallen_leaves-Hisashi-01A.jpg/1920px-Orange_tabby_cat_sitting_on_fallen_leaves-Hisashi-01A.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/3/30/George_the_amazing_guinea_pig.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1f/Oryctolagus_cuniculus_Rcdo.jpg/1920px-Oryctolagus_cuniculus_Rcdo.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/9/98/Horse-and-pony.jpg",
+]
 
 
 class ModelRequestData(NamedTuple):
@@ -578,16 +591,14 @@ def load_qwen2_5_vl(question: str, image_urls: list[str]) -> ModelRequestData:
     model_name = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
 
     engine_args = EngineArgs(
-        device="cuda:0",
         model=model_name,
-        max_model_len=102000 if process_vision_info is None else 102000,
+        max_model_len=102400,
         max_num_seqs=8,
         limit_mm_per_prompt={"image": len(image_urls)},
-        gpu_memory_utilization=.95,
+        # customizations to fit in low-memory GPUs
         enable_chunked_prefill=True,
-        max_num_batched_tokens=8192,
-        enforce_eager=False,
-        disable_mm_preprocessor_cache=False,
+        max_num_batched_tokens=4096,
+        # allow up to 1024 patches / tokens per image
         mm_processor_kwargs={
             "min_pixels": 28 * 28,
             "max_pixels": 1024 * 28 * 28,
@@ -663,16 +674,14 @@ def run_generate(model, question: str, image_urls: list[str],
                                      max_tokens=1024,
                                      stop_token_ids=req_data.stop_token_ids)
 
-    prompts = [        
+    outputs = llm.generate(
         {
             "prompt": req_data.prompt,
             "multi_modal_data": {
                 "image": req_data.image_data
             },
         },
-    ]    
-
-    outputs = llm.generate(prompts, sampling_params=sampling_params,
+        sampling_params=sampling_params,
         lora_request=req_data.lora_requests,
     )
 
@@ -752,7 +761,7 @@ if __name__ == "__main__":
     parser.add_argument('--model-type',
                         '-m',
                         type=str,
-                        default="qwen2_5_vl",
+                        default="phi3_v",
                         choices=model_example_map.keys(),
                         help='Huggingface "model_type".')
     parser.add_argument("--method",
@@ -767,8 +776,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-images",
         "-n",
-        choices=list(range(1, len(IMAGE_URLS) + 1)),  # 12 is the max number of images
-        default=len(IMAGE_URLS),
+        choices=list(range(1, 13)),  # 12 is the max number of images
+        default=2,
         help="Number of images to use for the demo.")
 
     args = parser.parse_args()
