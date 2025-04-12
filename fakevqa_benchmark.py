@@ -1,7 +1,8 @@
 import resource
 import time
 import json
-from vllm import LLM, EngineArgs, SamplingParams
+from tqdm import tqdm
+from vllm import LLM, SamplingParams
 from vllm.utils import FlexibleArgumentParser
 
 from vision_language_multi_image import load_qwen2_5_vl
@@ -34,15 +35,17 @@ def prepare_prompts(entries):
     # sort entries by number of pages so that the last entry is the one with the most pages,
     # and we can use the first few for warmup
     entries.sort(key=lambda x: len(x["files"]))
-    for entry in entries:
-        req_data = load_qwen2_5_vl("_question_placeholder_", entry["files"])
-        prompts.append(
-            {
-                "prompt": req_data.prompt,
-                "multi_modal_data": {"image": req_data.image_data},
-            }
-        )
-
+    with tqdm(total=len(entries), desc="Preparing prompts") as pbar:
+        for entry in entries:
+            req_data = load_qwen2_5_vl("_question_placeholder_", entry["files"])
+            prompts.append(
+                {
+                    "prompt": req_data.prompt,
+                    "multi_modal_data": {"image": req_data.image_data},
+                }
+            )
+            pbar.update(1)
+    
     # use the engine args from the last entry == one with the most pages
     # since that will setup correct multimodal limits
     engine_args = asdict(req_data.engine_args) | {"seed": args.seed}
@@ -62,7 +65,7 @@ def report_memory_usage():
 
 def save_metrics(metrics, scenario, tag):
     with open(f"metrics_{scenario}_{tag}.csv", "w") as f:
-        f.write("tag,page_count,num_prompts,run_time,memory_usage\n")
+        f.write("tag,page_count,num_prompts,total_pages,run_time,time_per_page,peak_memory_usage\n")
         f.write("\n".join(metrics))
 
 def grouped_benchmark(llm, sampling_params, lora_requests, prompts, tag):
@@ -88,9 +91,10 @@ def grouped_benchmark(llm, sampling_params, lora_requests, prompts, tag):
         total_memory_usage = report_memory_usage()
         run_time = time.time() - start_time
         num_pages = len(group) * page_count
-        print(f"Time: {run_time:.02f} seconds, per page: {run_time / num_pages:.02f} seconds")
+        time_per_page = run_time / num_pages
+        print(f"Time: {run_time:.02f} seconds, per page: {time_per_page:.02f} seconds")
         start_time = time.time()
-        metrics.append(f"{tag},{page_count},{len(group)},{run_time:.02f},{total_memory_usage:.01f}")
+        metrics.append(f"{tag},{page_count},{len(group)},{num_pages},{run_time:.02f},{time_per_page:.02f},{total_memory_usage:.01f}")
     return outputs, metrics
 
 def mixed_benchmark(llm, sampling_params, lora_requests, prompts, tag):
@@ -108,9 +112,10 @@ def mixed_benchmark(llm, sampling_params, lora_requests, prompts, tag):
     total_memory_usage = report_memory_usage()
     run_time = time.time() - start_time
     num_pages = sum(len(p["multi_modal_data"]["image"]) for p in prompts)
-    print(f"Time: {run_time:.02f} seconds, per page: {run_time / num_pages:.02f} seconds")
+    time_per_page = run_time / num_pages
+    print(f"Time: {run_time:.02f} seconds, per page: {time_per_page:.02f} seconds")
     avg_page_count = sum(len(p["multi_modal_data"]["image"]) for p in prompts) / len(prompts)
-    metrics = [ f"{tag},{avg_page_count:.01f},{len(prompts)},{run_time:.02f},{total_memory_usage:.01f}" ]
+    metrics = [ f"{tag},{avg_page_count:.01f},{len(prompts)},{num_pages},{run_time:.02f},{time_per_page:.02f},{total_memory_usage:.01f}" ]
     return outputs, metrics
 
 def evaluate_answers(outputs, entries):
