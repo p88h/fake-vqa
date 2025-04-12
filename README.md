@@ -66,6 +66,12 @@ You can specify a custom output directory:
 python generate_benchmark.py --output_dir my_benchmark_data
 ```
 
+You can also customize the document sizes:
+
+```bash
+python generate_benchmark.py --max_pages 64 --min_pages 8
+```
+
 ### Running the Benchmark
 
 To run the benchmark with a Vision-Language Model:
@@ -76,8 +82,10 @@ python fakevqa_benchmark.py
 
 Options:
 - `--seed`: Set the random seed for reproducibility
-- `--num-pages` or `-n`: Maximum number of pages to use (choices: 4, 8, 16, 32, 64, 128, 256)
-- `--tag` or `-t`: Type of question to use (choices: simple, qa, summarize, all)
+- `--max-pages` or `-m`: Maximum number of pages to use (choices: 4, 8, 16, 32, 64, 128)
+- `--min-pages` or `-n`: Minimum number of pages to use (choices: 1, 2, 4, 8, 16, 32)
+- `--total-pages` or `-p`: Total number of pages to use for the benchmark
+- `--tag` or `-t`: Type of question to use (choices: simple, qa, summarize, ocr, all)
 - `--scenario` or `-s`: Benchmark scenario to run (choices: composite, grouped, mixed, throughput)
 
 #### Benchmark Scenarios
@@ -86,6 +94,7 @@ Options:
   - Throughput test with simple questions
   - Mixed test with QA questions & answer quality assessment 
   - Mixed test with summarization
+  - Mixed test with OCR
 - **Grouped**: Tests performance on documents grouped by page count
 - **Mixed**: Tests performance on a mix of different document sizes
 - **Throughput**: Tests both grouped and mixed scenarios for all question types
@@ -100,6 +109,7 @@ The benchmark generates several output files:
   - Memory usage
 - `answers.json`: Contains the model's answers for QA questions
 - `summaries.json`: Contains the model's summaries for summarization tasks
+- `ocr.json`: Contains the extracted text from documents
 
 ## Project Structure
 
