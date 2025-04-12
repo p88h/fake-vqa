@@ -3,7 +3,6 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
 from faker import Faker
-import numpy as np
 
 # Initialize Faker for generating realistic text
 fake = Faker()
@@ -82,7 +81,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
     # Add a simple bar chart if there's space
     if y_position < 800:  # Leave enough space for the chart
         # Chart dimensions
-        chart_width = 640
+        chart_width = 600
         chart_height = 150
         chart_x = 50
         chart_y = y_position + 20
@@ -117,7 +116,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
     return img
 
 
-def generate_mock_document(num_pages=3, output_dir="mock_docs", prefix="doc") -> dict:
+def generate_mock_document(num_pages=3, output_dir="mock_docs", prefix="doc", pbar=None) -> dict:
     """Generate a complete mock document with specified number of pages.
 
     Args:
@@ -169,7 +168,9 @@ def generate_mock_document(num_pages=3, output_dir="mock_docs", prefix="doc") ->
         file_path = os.path.join(output_dir, f"{prefix}_page_{page_num:03d}.jpg")
         img.save(file_path)
         files.append(file_path)
-    
+        if pbar:
+            pbar.update(1)
+
     return {
         "docid": docid,
         "files": files,
