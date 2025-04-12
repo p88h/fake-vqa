@@ -83,7 +83,8 @@ def grouped_benchmark(llm, sampling_params, lora_requests, prompts, tag):
         ))
         total_memory_usage = report_memory_usage()
         run_time = time.time() - start_time
-        print(f"Time: {run_time} seconds")
+        num_pages = len(group) * page_count
+        print(f"Time: {run_time:.02f} seconds, per page: {run_time / num_pages:.02f} seconds")
         start_time = time.time()
         metrics.append(f"{tag},{page_count},{len(group)},{run_time:.02f},{total_memory_usage:.01f}")
     return outputs, metrics
@@ -100,7 +101,8 @@ def mixed_benchmark(llm, sampling_params, lora_requests, prompts, tag):
     )
     total_memory_usage = report_memory_usage()
     run_time = time.time() - start_time
-    print(f"Time: {time.time() - start_time} seconds")
+    num_pages = sum(len(p["multi_modal_data"]["image"]) for p in prompts)
+    print(f"Time: {run_time:.02f} seconds, per page: {run_time / num_pages:.02f} seconds")
     avg_page_count = sum(len(p["multi_modal_data"]["image"]) for p in prompts) / len(prompts)
     metrics = [ f"{tag},{avg_page_count:.01f},{len(prompts)},{run_time:.02f},{total_memory_usage:.01f}" ]
     return outputs, metrics
