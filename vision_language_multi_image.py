@@ -330,6 +330,44 @@ def load_llama4(question: str, image_urls: list[str]) -> ModelRequestData:
     )
 
 
+def load_kimi_vl(question: str, image_urls: list[str]) -> ModelRequestData:
+    model_name = "moonshotai/Kimi-VL-A3B-Instruct"
+
+    engine_args = EngineArgs(
+        model=model_name,
+        max_model_len=4096,
+        max_num_seqs=4,
+        tensor_parallel_size=1,
+        limit_mm_per_prompt={"image": len(image_urls)},
+        trust_remote_code=True,
+    )
+
+    placeholders = [{"type": "image", "image": url} for url in image_urls]
+    messages = [{
+        "role":
+        "user",
+        "content": [
+            *placeholders,
+            {
+                "type": "text",
+                "text": question
+            },
+        ],
+    }]
+
+    processor = get_processor(model_name)
+
+    prompt = processor.apply_chat_template(messages,
+                                           tokenize=False,
+                                           add_generation_prompt=True)
+
+    return ModelRequestData(
+        engine_args=engine_args,
+        prompt=prompt,
+        image_data=[fetch_image(url) for url in image_urls],
+    )
+
+
 def load_mistral3(question: str, image_urls: list[str]) -> ModelRequestData:
     model_name = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 
@@ -583,7 +621,6 @@ def load_qwen2_vl(question: str, image_urls: list[str]) -> ModelRequestData:
     )
 
 
-
 def load_qwen2_5_vl(question: str, image_urls: list[str]) -> ModelRequestData:
     try:
         from qwen_vl_utils import process_vision_info
@@ -601,6 +638,7 @@ def load_qwen2_5_vl(question: str, image_urls: list[str]) -> ModelRequestData:
         max_num_seqs=8,
         limit_mm_per_prompt={"image": len(image_urls)},
         # customizations to fit in low-memory GPUs
+        gpu_memory_utilization=0.95,
         enable_chunked_prefill=True,
         max_num_batched_tokens=4096,
         # allow up to 1024 patches / tokens per image
@@ -654,6 +692,7 @@ model_example_map = {
     "h2ovl_chat": load_h2ovl,
     "idefics3": load_idefics3,
     "internvl_chat": load_internvl,
+    "kimi_vl": load_kimi_vl,
     "llama4": load_llama4,
     "mistral3": load_mistral3,
     "mllama": load_mllama,
@@ -701,6 +740,11 @@ def run_chat(model: str, question: str, image_urls: list[str],
              seed: Optional[int]):
     req_data = model_example_map[model](question, image_urls)
 
+    # Disable other modalities to save memory
+    default_limits = {"image": 0, "video": 0, "audio": 0}
+    req_data.engine_args.limit_mm_per_prompt = default_limits | dict(
+        req_data.engine_args.limit_mm_per_prompt or {})
+
     engine_args = asdict(req_data.engine_args) | {"seed": seed}
     llm = LLM(**engine_args)
 
@@ -743,22 +787,7 @@ def run_chat(model: str, question: str, image_urls: list[str],
         print("-" * 50)
 
 
-def main(args: Namespace):
-    model = args.model_type
-    method = args.method
-    seed = args.seed
-
-    image_urls = IMAGE_URLS[:args.num_images]
-
-    if method == "generate":
-        run_generate(model, QUESTION, image_urls, seed)
-    elif method == "chat":
-        run_chat(model, QUESTION, image_urls, seed)
-    else:
-        raise ValueError(f"Invalid method: {method}")
-
-
-if __name__ == "__main__":
+def parse_args():
     parser = FlexibleArgumentParser(
         description='Demo on using vLLM for offline inference with '
         'vision language models that support multi-image input for text '
@@ -784,6 +813,24 @@ if __name__ == "__main__":
         choices=list(range(1, 13)),  # 12 is the max number of images
         default=2,
         help="Number of images to use for the demo.")
+    return parser.parse_args()
 
-    args = parser.parse_args()
+
+def main(args: Namespace):
+    model = args.model_type
+    method = args.method
+    seed = args.seed
+
+    image_urls = IMAGE_URLS[:args.num_images]
+
+    if method == "generate":
+        run_generate(model, QUESTION, image_urls, seed)
+    elif method == "chat":
+        run_chat(model, QUESTION, image_urls, seed)
+    else:
+        raise ValueError(f"Invalid method: {method}")
+
+
+if __name__ == "__main__":
+    args = parse_args()
     main(args)
