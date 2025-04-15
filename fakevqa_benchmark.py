@@ -1,8 +1,9 @@
+import asyncio
 import resource
 import time
 import json
 from tqdm import tqdm
-from vllm import LLM, SamplingParams
+from vllm import LLM, AsyncEngineArgs, AsyncLLMEngine, EngineArgs, SamplingParams
 from vllm.utils import FlexibleArgumentParser
 
 from vision_language_multi_image import load_qwen2_5_vl
@@ -49,7 +50,7 @@ def prepare_prompts(entries):
     # use the engine args from the last entry == one with the most pages
     # since that will setup correct multimodal limits
     engine_args = asdict(req_data.engine_args) | {"seed": args.seed}
-    llm = LLM(**engine_args)
+    llm = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(**engine_args))
     sampling_params = SamplingParams(
         temperature=0.0, max_tokens=1024, stop_token_ids=req_data.stop_token_ids
     )
@@ -68,7 +69,20 @@ def save_metrics(metrics, scenario, tag):
         f.write("tag,page_count,num_prompts,total_pages,run_time,time_per_page,peak_memory_usage\n")
         f.write("\n".join(metrics))
 
-def grouped_benchmark(llm, sampling_params, lora_requests, prompts, tag):
+async def async_prompt(generator):
+    final_output = None
+    async for output in generator:
+        final_output = output
+    return final_output
+
+async def async_generate(llm, sampling_params, lora_request, prompts):
+    requests = []
+    for id, prompt in enumerate(prompts):
+        gen = llm.generate(prompt, sampling_params, request_id=str(id), lora_request=lora_request)
+        requests.append(async_prompt(gen))
+    return await asyncio.gather(*requests)
+    
+async def grouped_benchmark(llm, sampling_params, lora_requests, prompts, tag):
     # first stage - run with groups of equal number of pages
     # Group prompts by number of pages (length of image data)
     grouped_prompts = defaultdict(list)
@@ -83,11 +97,7 @@ def grouped_benchmark(llm, sampling_params, lora_requests, prompts, tag):
     for page_count, group in grouped_prompts.items():
         print(f"Running group with {page_count} pages for {tag} question (max output: "
               f"{question_bank[tag][1]} tokens) ...")
-        outputs.extend(llm.generate(
-            group,
-            sampling_params=sampling_params,
-            lora_request=lora_requests,
-        ))
+        outputs.extend(await async_generate(llm, sampling_params, lora_requests, group))
         total_memory_usage = report_memory_usage()
         run_time = time.time() - start_time
         num_pages = len(group) * page_count
@@ -97,18 +107,15 @@ def grouped_benchmark(llm, sampling_params, lora_requests, prompts, tag):
         metrics.append(f"{tag},{page_count},{len(group)},{num_pages},{run_time:.02f},{time_per_page:.02f},{total_memory_usage:.01f}")
     return outputs, metrics
 
-def mixed_benchmark(llm, sampling_params, lora_requests, prompts, tag):
+async def mixed_benchmark(llm, sampling_params, lora_requests, prompts, tag):
     # Second time - run a quality check on all the documents with the real question
     # This can perhaps also measure cached performance -- all images are the same
     print(f"Running a mixed benchmark for {tag} question (max output: "
           f"{question_bank[tag][1]} tokens) ...")
     start_time = time.time()
     sampling_params.max_tokens = question_bank[tag][1]
-    outputs = llm.generate(
-        [update_prompt(p, question_bank[tag][0]) for p in prompts],
-        sampling_params=sampling_params,
-        lora_request=lora_requests,
-    )
+    updated_prompts = [ update_prompt(p, question_bank[tag][0]) for p in prompts ]
+    outputs = await async_generate(llm, sampling_params, lora_requests, updated_prompts)
     total_memory_usage = report_memory_usage()
     run_time = time.time() - start_time
     num_pages = sum(len(p["multi_modal_data"]["image"]) for p in prompts)
@@ -139,17 +146,17 @@ def evaluate_answers(outputs, entries):
     print(f"\nAverage score: {total_score * 100 // (len(outputs) * 4)}%")
     return answers
 
-def composite_scenario(entries):
+async def composite_scenario(entries):
     """
     Run a composite scenario with throughput/simple, mixed/qa, and mixed/summarize benchmarks.
     """
     llm, sampling_params, lora_requests, prompts = prepare_prompts(entries)
 
     # Single question, grouped by size, used to measure throughput / memory usage
-    _, metrics = grouped_benchmark(llm, sampling_params, lora_requests, prompts, "simple")
+    _, metrics = await grouped_benchmark(llm, sampling_params, lora_requests, prompts, "simple")
 
     # QA task
-    outputs, metrics1 = mixed_benchmark(llm, sampling_params, lora_requests, prompts, "qa")
+    outputs, metrics1 = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, "qa")
     metrics.extend(metrics1)
     answers = evaluate_answers(outputs, entries)
     # save answers to a file for review
@@ -157,14 +164,14 @@ def composite_scenario(entries):
         json.dump(answers, f, indent=2)
 
     # Summarize task
-    outputs, metrics2 = mixed_benchmark(llm, sampling_params, lora_requests, prompts, "summarize")
+    outputs, metrics2 = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, "summarize")
     metrics.extend(metrics2)
     # save summaries to a file for review
     with open("summaries.json", "w") as f:
         json.dump({entries[i]["title"]: o.outputs[0].text for i, o in enumerate(outputs)}, f, indent=2)
 
     # OCR task
-    outputs, metrics3 = mixed_benchmark(llm, sampling_params, lora_requests, prompts, "ocr")
+    outputs, metrics3 = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, "ocr")
     metrics.extend(metrics3)
     # save ocr to a file for review
     with open("ocr.json", "w") as f:
@@ -172,7 +179,7 @@ def composite_scenario(entries):
 
     save_metrics(metrics, "composite", "all")
 
-def grouped_scenario(entries, tag):
+async def grouped_scenario(entries, tag):
     """
     Run a grouped scenario with selected questions.
     """
@@ -180,11 +187,11 @@ def grouped_scenario(entries, tag):
     tags = question_bank.keys() if tag == "all" else [tag]
     all_metrics = []
     for t in tags:
-        _, metrics = grouped_benchmark(llm, sampling_params, lora_requests, prompts, t)
+        _, metrics = await grouped_benchmark(llm, sampling_params, lora_requests, prompts, t)
         all_metrics.extend(metrics)
     save_metrics(all_metrics, "grouped", tag)
 
-def mixed_scenario(entries, tag):
+async def mixed_scenario(entries, tag):
     """
     Run a mixed scenario with selected questions.
     """
@@ -192,11 +199,11 @@ def mixed_scenario(entries, tag):
     tags = question_bank.keys() if tag == "all" else [tag]
     all_metrics = []
     for t in tags:
-        _, metrics = mixed_benchmark(llm, sampling_params, lora_requests, prompts, t)
+        _, metrics = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, t)
         all_metrics.extend(metrics)
     save_metrics(all_metrics, "mixed", tag)
 
-def throughput_scenario(entries, tag):
+async def throughput_scenario(entries, tag):
     """
     Run a throughput scenario with selected questions.
     """
@@ -204,24 +211,24 @@ def throughput_scenario(entries, tag):
     tags = question_bank.keys() if tag == "all" else [tag]
     all_metrics = []
     for t in tags:
-        _, metrics1 = grouped_benchmark(llm, sampling_params, lora_requests, prompts, t)
+        _, metrics1 = await grouped_benchmark(llm, sampling_params, lora_requests, prompts, t)
         all_metrics.extend(metrics1)
-        _, metrics2 = mixed_benchmark(llm, sampling_params, lora_requests, prompts, t)
+        _, metrics2 = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, t)
         all_metrics.extend(metrics2)
     save_metrics(all_metrics, "throughput", tag)
 
-def main(args):
+async def main(args):
     entries = generate_benchmark_dataset(max_pages=args.max_pages, 
                                          min_pages=args.min_pages, 
                                          num_pages=args.total_pages)
     if args.scenario == "composite":
-        composite_scenario(entries)
+        await composite_scenario(entries)
     elif args.scenario == "grouped":
-        grouped_scenario(entries, args.tag)
+        await grouped_scenario(entries, args.tag)
     elif args.scenario == "mixed":
-        mixed_scenario(entries, args.tag)
+        await mixed_scenario(entries, args.tag)
     elif args.scenario == "throughput":
-        throughput_scenario(entries, args.tag)
+        await throughput_scenario(entries, args.tag)
 
 if __name__ == "__main__":
     parser = FlexibleArgumentParser(
@@ -273,4 +280,4 @@ if __name__ == "__main__":
         help="Scenario to run.",
     )
     args = parser.parse_args()
-    main(args)
+    asyncio.run(main(args))
