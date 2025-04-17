@@ -1,6 +1,8 @@
 /__pycache__
 /benchmark_docs
 /mock_docs
+/outputs
+/unsloth_compiled_cache
 .env
 
 *.jpg
