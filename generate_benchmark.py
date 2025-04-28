@@ -26,7 +26,7 @@ def generate_benchmark_dataset(
 
     # Generate the size ratios to use based on the min and max pages.
     ratios = [1]
-    while max_pages / ratios[-1] > min_pages:
+    while max_pages // ratios[-1] > min_pages:
         ratios.append(ratios[-1] * 2)
 
     # Computer the total number of pages to generate unless provided

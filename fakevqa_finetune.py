@@ -17,7 +17,7 @@ model, tokenizer = FastVisionModel.from_pretrained(
     "unsloth/Qwen2-VL-7B-Instruct",
     load_in_4bit=True,  # Use 4bit to reduce memory use. False for 16bit LoRA.
     use_gradient_checkpointing="unsloth",  # True or "unsloth" for long context
-    max_seq_length=32768,
+    max_seq_length=128000,
     # use_flash_attention_2=True,
 )
 
@@ -104,7 +104,7 @@ print(f"Evaluating control sample on QA task...")
 from transformers import TextStreamer
 text_streamer = TextStreamer(tokenizer, skip_prompt = True)
 _ = model.generate(**inputs, streamer = text_streamer, max_new_tokens = 128,
-                    use_cache = True, temperature = 1.5, min_p = 0.1)
+                    use_cache = True, temperature = 0.1, do_sample = False, min_p = 0.1)
 
 from unsloth import is_bf16_supported
 from unsloth.trainer import UnslothVisionDataCollator
@@ -138,7 +138,7 @@ trainer = SFTTrainer(
         dataset_text_field="",
         dataset_kwargs={"skip_prepare_dataset": True},
         dataset_num_proc=4,
-        max_seq_length=32768,
+        max_seq_length=128000,
     ),
 )
 
@@ -149,5 +149,5 @@ print(f"Validating control sample QA task again...")
 from transformers import TextStreamer
 text_streamer = TextStreamer(tokenizer, skip_prompt = True)
 _ = model.generate(**inputs, streamer = text_streamer, max_new_tokens = 128,
-                    use_cache = True, temperature = 1.5, min_p = 0.1)
+                    use_cache = True, temperature = 0.1, do_sample = False, min_p = 0.1)
 print("Expected: ", control["messages"][1]["content"])
