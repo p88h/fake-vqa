@@ -1,4 +1,6 @@
+import argparse
 import asyncio
+import itertools
 import resource
 import time
 import json
@@ -11,24 +13,70 @@ from dataclasses import asdict
 from collections import defaultdict
 from generate_benchmark import generate_benchmark_dataset
 
+qa_batch = [
+    "What is the value of the keyword?",
+    "What is the value of the parameter A in the table?",
+    "What is the value of the parameter B in the table?",
+    "What is the value of the parameter C in the table?",
+    "What is the document ID?",
+    "What is the title of the document?",
+    "How many pages does the document have?",
+    "What is the title of the bar chart on the first page?",
+    "What are the value labels of the bar chart on the first page?",
+    "What would be a one paragraph summary of the document?",
+]
+
+qa_system_prompt = """Answer following questions based on the document.
+    Answer one line per question, just the answer, no other text.\n"""
+
 # tag -> (question, max_tokens)
 question_bank = {
     "simple": ( "What is the value of the keyword?", 128 ),
-    "qa": ( """Answer following questions based on the document:
+    "qa": ( """Provide the following values based on the document:
     Answer one line per question, just the answer, no other text.
     - docid: document ID
     - title: title of the document
     - keyword: value of the keyword
     - param_b: the value of the parameter B in the table""", 1024 ),
     "summarize": ( "Summarize the document in 500 words", 2048 ),
-    "ocr": ( "Extract text from the document", 4096 )
+    "ocr": ( "Extract text from the document", 4096 ),
+    "qa_batched": ( qa_system_prompt + "\n".join(qa_batch),  2000),
+    "qa_multi": ( [ qa_system_prompt + question for question in qa_batch], 2000 ) # each
 }
 
-def update_prompt(prompt, question):
-    return {
-        "prompt": prompt["prompt"].replace("_question_placeholder_", question),
-        "multi_modal_data": prompt["multi_modal_data"],
-    }
+# prompt wrapper for async processing
+async def async_prompt(generator):
+    final_output = None
+    async for output in generator:
+        final_output = output
+    return final_output
+
+# sync/async LLM wrapper
+class LLMWrapper:
+    def __init__(self, req_data):
+        engine_args = asdict(req_data.engine_args) | {"seed": args.seed}        
+        if args.use_async:
+            self.async_engine = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(**engine_args))
+        else:
+            self.llm = LLM(**engine_args)
+
+        self.sampling_params = SamplingParams(
+            temperature=0.0, max_tokens=1024, stop_token_ids=req_data.stop_token_ids
+        )
+        self.lora_requests = req_data.lora_requests
+    
+    async def process(self, prompts):
+        if args.use_async:
+            requests = []
+            for id, prompt in enumerate(prompts):
+                gen = self.async_engine.generate(prompt, self.sampling_params, request_id=str(id), lora_request=self.lora_requests)
+                requests.append(async_prompt(gen))
+            outputs = await asyncio.gather(*requests)
+            await self.async_engine.reset_prefix_cache()
+        else:
+            outputs = self.llm.generate(prompts, self.sampling_params, lora_request=self.lora_requests)
+            self.llm.reset_prefix_cache()
+        return outputs
 
 def prepare_prompts(entries):
     prompts = []
@@ -47,15 +95,7 @@ def prepare_prompts(entries):
             )
             pbar.update(1)
     
-    # use the engine args from the last entry == one with the most pages
-    # since that will setup correct multimodal limits
-    engine_args = asdict(req_data.engine_args) | {"seed": args.seed}
-    llm = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(**engine_args))
-    sampling_params = SamplingParams(
-        temperature=0.0, max_tokens=1024, stop_token_ids=req_data.stop_token_ids
-    )
-
-    return llm, sampling_params, req_data.lora_requests, prompts
+    return LLMWrapper(req_data), prompts
 
 def report_memory_usage():
     max_self_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1 << 20)
@@ -69,60 +109,55 @@ def save_metrics(metrics, scenario, tag):
         f.write("tag,page_count,num_prompts,total_pages,run_time,time_per_page,peak_memory_usage\n")
         f.write("\n".join(metrics))
 
-async def async_prompt(generator):
-    final_output = None
-    async for output in generator:
-        final_output = output
-    return final_output
+def update_prompt(prompt, question):
+    return {
+        "prompt": prompt["prompt"].replace("_question_placeholder_", question),
+        "multi_modal_data": prompt["multi_modal_data"],
+    }
 
-async def async_generate(llm, sampling_params, lora_request, prompts):
-    requests = []
-    for id, prompt in enumerate(prompts):
-        gen = llm.generate(prompt, sampling_params, request_id=str(id), lora_request=lora_request)
-        requests.append(async_prompt(gen))
-    return await asyncio.gather(*requests)
-    
-async def grouped_benchmark(llm, sampling_params, lora_requests, prompts, tag):
-    # first stage - run with groups of equal number of pages
-    # Group prompts by number of pages (length of image data)
-    grouped_prompts = defaultdict(list)
-    for p in prompts:
-        q = update_prompt(p, question_bank[tag][0])
-        grouped_prompts[len(p["multi_modal_data"]["image"])].append(q)
+async def process_prompts(wrapper, prompts, tag):
+    num_pages = sum(len(p["multi_modal_data"]["image"]) for p in prompts)
+    print(f"Processing {len(prompts)} prompts / {num_pages} pages with {tag} question "
+          f"(max output: {question_bank[tag][1]} tokens) ...")
+    start_time = time.time()
+    if isinstance(question_bank[tag][0], list):
+        # if the question is a list, we will use it as a batch of questions
+        # and generate one output per question
+        wrapper.sampling_params.max_tokens = question_bank[tag][1] // len(question_bank[tag][0])
+        updated_prompts = [ update_prompt(p, q) for p in prompts for q in question_bank[tag][0] ]
+    else:
+        wrapper.sampling_params.max_tokens = question_bank[tag][1]
+        updated_prompts = [ update_prompt(p, question_bank[tag][0]) for p in prompts ]
+    outputs = await wrapper.process(updated_prompts)
+    total_memory_usage = report_memory_usage()
+    run_time = time.time() - start_time
+    time_per_page = run_time / num_pages
+    print(f"Time: {run_time:.02f} seconds, per page: {time_per_page:.02f} seconds")
+    input_tokens = 0
+    output_tokens = 0
+    cached_tokens = 0
+    for output in outputs:
+        input_tokens += len(output.prompt_token_ids) 
+        if output.encoder_prompt_token_ids:
+            input_tokens += len(output.encoder_prompt_token_ids)
+        if output.num_cached_tokens:
+            cached_tokens += output.num_cached_tokens
+        output_tokens += len(output.outputs[0].token_ids)
+    print(f"Total input tokens: {input_tokens}, Cached tokens: {cached_tokens}, Output tokens: {output_tokens}")
+    avg_page_count = num_pages / len(prompts)
+    metrics = [ f"{tag},{avg_page_count:.01f},{len(prompts)},{num_pages},{run_time:.02f},{time_per_page:.02f},{total_memory_usage:.01f}" ]
+    return outputs, metrics
 
+async def process_grouped_by_size(wrapper, prompts, tag):
     start_time = time.time()
     metrics = []
     outputs = []
-    sampling_params.max_tokens = question_bank[tag][1]
-    for page_count, group in grouped_prompts.items():
-        print(f"Running group with {page_count} pages for {tag} question (max output: "
-              f"{question_bank[tag][1]} tokens) ...")
-        outputs.extend(await async_generate(llm, sampling_params, lora_requests, group))
-        total_memory_usage = report_memory_usage()
-        run_time = time.time() - start_time
-        num_pages = len(group) * page_count
-        time_per_page = run_time / num_pages
-        print(f"Time: {run_time:.02f} seconds, per page: {time_per_page:.02f} seconds")
-        start_time = time.time()
-        metrics.append(f"{tag},{page_count},{len(group)},{num_pages},{run_time:.02f},{time_per_page:.02f},{total_memory_usage:.01f}")
-    return outputs, metrics
-
-async def mixed_benchmark(llm, sampling_params, lora_requests, prompts, tag):
-    # Second time - run a quality check on all the documents with the real question
-    # This can perhaps also measure cached performance -- all images are the same
-    print(f"Running a mixed benchmark for {tag} question (max output: "
-          f"{question_bank[tag][1]} tokens) ...")
-    start_time = time.time()
-    sampling_params.max_tokens = question_bank[tag][1]
-    updated_prompts = [ update_prompt(p, question_bank[tag][0]) for p in prompts ]
-    outputs = await async_generate(llm, sampling_params, lora_requests, updated_prompts)
-    total_memory_usage = report_memory_usage()
-    run_time = time.time() - start_time
-    num_pages = sum(len(p["multi_modal_data"]["image"]) for p in prompts)
-    time_per_page = run_time / num_pages
-    print(f"Time: {run_time:.02f} seconds, per page: {time_per_page:.02f} seconds")
-    avg_page_count = sum(len(p["multi_modal_data"]["image"]) for p in prompts) / len(prompts)
-    metrics = [ f"{tag},{avg_page_count:.01f},{len(prompts)},{num_pages},{run_time:.02f},{time_per_page:.02f},{total_memory_usage:.01f}" ]
+    wrapper.sampling_params.max_tokens = question_bank[tag][1]
+    grouped = itertools.groupby(prompts, key=lambda p: len(p["multi_modal_data"]["image"]))
+    for page_count, group in grouped:      
+        o, m = await process_prompts(wrapper, list(group), tag)
+        outputs.extend(o)
+        metrics.extend(m)
     return outputs, metrics
 
 def evaluate_answers(outputs, entries):
@@ -150,13 +185,13 @@ async def composite_scenario(entries):
     """
     Run a composite scenario with throughput/simple, mixed/qa, and mixed/summarize benchmarks.
     """
-    llm, sampling_params, lora_requests, prompts = prepare_prompts(entries)
+    wrapper, prompts = prepare_prompts(entries)
 
     # Single question, grouped by size, used to measure throughput / memory usage
-    _, metrics = await grouped_benchmark(llm, sampling_params, lora_requests, prompts, "simple")
+    _, metrics = await process_grouped_by_size(wrapper, prompts, "simple")
 
     # QA task
-    outputs, metrics1 = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, "qa")
+    outputs, metrics1 = await process_prompts(wrapper, prompts, "qa")
     metrics.extend(metrics1)
     answers = evaluate_answers(outputs, entries)
     # save answers to a file for review
@@ -164,14 +199,14 @@ async def composite_scenario(entries):
         json.dump(answers, f, indent=2)
 
     # Summarize task
-    outputs, metrics2 = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, "summarize")
+    outputs, metrics2 = await process_prompts(wrapper, prompts, "summarize")
     metrics.extend(metrics2)
     # save summaries to a file for review
     with open("summaries.json", "w") as f:
         json.dump({entries[i]["title"]: o.outputs[0].text for i, o in enumerate(outputs)}, f, indent=2)
 
     # OCR task
-    outputs, metrics3 = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, "ocr")
+    outputs, metrics3 = await process_prompts(wrapper, prompts, "ocr")
     metrics.extend(metrics3)
     # save ocr to a file for review
     with open("ocr.json", "w") as f:
@@ -183,11 +218,11 @@ async def grouped_scenario(entries, tag):
     """
     Run a grouped scenario with selected questions.
     """
-    llm, sampling_params, lora_requests, prompts = prepare_prompts(entries)
-    tags = question_bank.keys() if tag == "all" else [tag]
+    wrapper, prompts = prepare_prompts(entries)
+    tags = question_bank.keys() if tag == "all" else tag.split(",")
     all_metrics = []
     for t in tags:
-        _, metrics = await grouped_benchmark(llm, sampling_params, lora_requests, prompts, t)
+        _, metrics = await process_grouped_by_size(wrapper, prompts, t)
         all_metrics.extend(metrics)
     save_metrics(all_metrics, "grouped", tag)
 
@@ -195,11 +230,11 @@ async def mixed_scenario(entries, tag):
     """
     Run a mixed scenario with selected questions.
     """
-    llm, sampling_params, lora_requests, prompts = prepare_prompts(entries)
-    tags = question_bank.keys() if tag == "all" else [tag]
+    wrapper, prompts = prepare_prompts(entries)
+    tags = question_bank.keys() if tag == "all" else tag.split(",")
     all_metrics = []
     for t in tags:
-        _, metrics = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, t)
+        _, metrics = await process_prompts(wrapper, prompts, t)
         all_metrics.extend(metrics)
     save_metrics(all_metrics, "mixed", tag)
 
@@ -207,13 +242,13 @@ async def throughput_scenario(entries, tag):
     """
     Run a throughput scenario with selected questions.
     """
-    llm, sampling_params, lora_requests, prompts = prepare_prompts(entries)
-    tags = question_bank.keys() if tag == "all" else [tag]
+    wrapper, prompts = prepare_prompts(entries)
+    tags = question_bank.keys() if tag == "all" else tag.split(",")
     all_metrics = []
     for t in tags:
-        _, metrics1 = await grouped_benchmark(llm, sampling_params, lora_requests, prompts, t)
+        _, metrics1 = await process_grouped_by_size(wrapper, prompts, t)
         all_metrics.extend(metrics1)
-        _, metrics2 = await mixed_benchmark(llm, sampling_params, lora_requests, prompts, t)
+        _, metrics2 = await process_prompts(wrapper, prompts, t)
         all_metrics.extend(metrics2)
     save_metrics(all_metrics, "throughput", tag)
 
@@ -237,6 +272,12 @@ if __name__ == "__main__":
         "generation"
     )
     parser.add_argument(
+        "--use-async",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to use async processing.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -246,7 +287,7 @@ if __name__ == "__main__":
         "--max-pages",
         "-m",
         type=int,
-        choices=[4, 8, 16, 32, 64, 128],
+        choices=[2, 4, 8, 16, 32, 64, 128],
         default=32,
         help="Maximum number of page images to use for the benchmark.",
     )
@@ -268,7 +309,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tag",
         "-t",
-        choices=list(question_bank.keys()) + ["all"],
+        type=str,
         default="simple",
         help="Type of the question to use in the grouped/mixed scenario.",
     )
