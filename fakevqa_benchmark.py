@@ -31,17 +31,18 @@ qa_system_prompt = """Answer following questions based on the document.
 
 # tag -> (question, max_tokens)
 question_bank = {
-    "simple": ( "What is the value of the keyword?", 128 ),
+    "simple": ( "What is the value of the keyword?", 10 ),
     "qa": ( """Provide the following values based on the document:
     Answer one line per question, just the answer, no other text.
     - docid: document ID
     - title: title of the document
     - keyword: value of the keyword
-    - param_b: the value of the parameter B in the table""", 1024 ),
-    "summarize": ( "Summarize the document in 500 words", 2048 ),
-    "ocr": ( "Extract text from the document", 4096 ),
+    - param_b: the value of the parameter B in the table""", 200 ),
+    "summarize": ( "Summarize the document in 500 words", 1000 ),
+    "ocr": ( "Extract text from the document", 4000 ),
+    "ocr_long": ( "Extract text from the document", 8000 ),
     "qa_batched": ( qa_system_prompt + "\n".join(qa_batch),  2000),
-    "qa_multi": ( [ qa_system_prompt + question for question in qa_batch], 2000 ) # each
+    "qa_multi": ( [ qa_system_prompt + question for question in qa_batch], 2000 )
 }
 
 # prompt wrapper for async processing
@@ -245,6 +246,7 @@ async def throughput_scenario(entries, tag):
     wrapper, prompts = prepare_prompts(entries)
     tags = question_bank.keys() if tag == "all" else tag.split(",")
     all_metrics = []
+    wrapper.sampling_params.ignore_eos = True
     for t in tags:
         _, metrics1 = await process_grouped_by_size(wrapper, prompts, t)
         all_metrics.extend(metrics1)
