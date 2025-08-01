@@ -254,6 +254,30 @@ async def throughput_scenario(entries, tag):
         all_metrics.extend(metrics2)
     save_metrics(all_metrics, "throughput", tag)
 
+async def scaling_scenario(entries):
+    """
+    Run a throughput scenario with selected questions.
+    """
+    wrapper, prompts = prepare_prompts(entries)
+
+    question_bank["qa_1"] = ( qa_batch[0], 200 )
+    question_bank["qa_3"] = ( qa_batch[1:4], 600 )
+    question_bank["qa_5"] = ( qa_batch[4:9], 1000 )
+    tags = [ "qa_1", "qa_3", "qa_5" ]
+    for s in [1, 2, 3, 5, 10, 20]:
+        question_bank[f"qa_{s}0"] = ( [ f"(test case {s}.{d})\n" + qa_batch[d % 10] for d in range(s * 10)], s * 2000 )
+        tags.append(f"qa_{s}0")
+        
+    all_metrics = []
+    wrapper.sampling_params.ignore_eos = True
+    for t in tags:
+        _, metrics = await process_grouped_by_size(wrapper, prompts, t)
+        all_metrics.extend(metrics)
+    for t in tags:
+        _, metrics = await process_prompts(wrapper, prompts, t)
+        all_metrics.extend(metrics)
+    save_metrics(all_metrics, "scaling", "qa_multi")
+
 async def main(args):
     entries = generate_benchmark_dataset(max_pages=args.max_pages, 
                                          min_pages=args.min_pages, 
@@ -266,6 +290,8 @@ async def main(args):
         await mixed_scenario(entries, args.tag)
     elif args.scenario == "throughput":
         await throughput_scenario(entries, args.tag)
+    elif args.scenario == "scaling":
+        await scaling_scenario(entries)
 
 if __name__ == "__main__":
     parser = FlexibleArgumentParser(
@@ -318,7 +344,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--scenario",
         "-s",
-        choices=["composite", "grouped", "mixed", "throughput"],
+        choices=["composite", "grouped", "mixed", "throughput", "scaling"],
         default="composite",
         help="Scenario to run.",
     )
