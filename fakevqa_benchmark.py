@@ -4,6 +4,7 @@ import itertools
 import resource
 import time
 import json
+import torch
 from tqdm import tqdm
 from vllm import LLM, AsyncEngineArgs, AsyncLLMEngine, EngineArgs, SamplingParams
 from vllm.utils import FlexibleArgumentParser
@@ -56,16 +57,19 @@ async def async_prompt(generator):
 class LLMWrapper:
     def __init__(self, req_data):
         engine_args = asdict(req_data.engine_args) | {"seed": args.seed}        
+        old_num_threads = torch.get_num_threads()
+        torch.set_num_threads(1)
         if args.use_async:
             self.async_engine = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(**engine_args))
         else:
             self.llm = LLM(**engine_args)
+        torch.set_num_threads(old_num_threads)
 
         self.sampling_params = SamplingParams(
             temperature=0.0, max_tokens=1024, stop_token_ids=req_data.stop_token_ids
         )
         self.lora_requests = req_data.lora_requests
-    
+
     async def process(self, prompts):
         if args.use_async:
             requests = []
