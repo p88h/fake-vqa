@@ -1,10 +1,13 @@
 import argparse
 import asyncio
 import itertools
+import pathlib
 import resource
 import time
 import json
 import torch
+import uuid
+from PIL import Image
 from tqdm import tqdm
 from vllm import LLM, AsyncEngineArgs, AsyncLLMEngine, EngineArgs, SamplingParams
 from vllm.utils import FlexibleArgumentParser
@@ -91,7 +94,11 @@ def prepare_prompts(entries):
     entries.sort(key=lambda x: len(x["files"]))
     with tqdm(total=len(entries), desc="Preparing prompts") as pbar:
         for entry in entries:
-            req_data = load_qwen2_5_vl("_question_placeholder_", entry["files"])
+            files = [ pathlib.Path(f).resolve().as_uri() for f in entry["files"] ]
+            req_data = load_qwen2_5_vl("_question_placeholder_", files)
+            # Tag each image with a unique ID to enable fast hashing
+            for img in req_data.image_data:
+                img.getexif()[Image.ExifTags.Base.ImageID] = uuid.uuid4()
             prompts.append(
                 {
                     "prompt": req_data.prompt,
