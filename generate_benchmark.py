@@ -1,13 +1,14 @@
 import argparse
 import json
 import os
+import random
 
 from tqdm import tqdm
-from generate_mock_doc import generate_mock_document
+from generate_mock_doc import fake, generate_mock_document
 
 
 def generate_benchmark_dataset(
-    output_dir="benchmark_docs", max_pages=32, min_pages=4, num_pages=None
+    output_dir="benchmark_docs", max_pages=32, min_pages=4, num_pages=None, seed=None
 ):
     """Generate a benchmark dataset with the following structure:
     - 1 x max_pages page document
@@ -20,7 +21,11 @@ def generate_benchmark_dataset(
     If num_pages is provided, it will be used as the total number of pages to generate.
     The rough distribution of pages per document will remain the same.
     The actual number of pages may be adjusted due to rounding.
+    If seed is provided, the generated dataset is reproducible.
     """
+    if seed is not None:
+        random.seed(seed)
+        fake.seed_instance(seed)
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
@@ -99,12 +104,13 @@ def main():
     parser.add_argument(
         "--num_pages", type=int, default=None, help="Total number of pages to generate"
     )
+    parser.add_argument("--seed", type=int, default=None, help="Random seed")
     args = parser.parse_args()
     print(
         f"Generating benchmark dataset with {args.min_pages} to {args.max_pages} pages per document"
     )
     _ = generate_benchmark_dataset(
-        args.output_dir, args.max_pages, args.min_pages, args.num_pages
+        args.output_dir, args.max_pages, args.min_pages, args.num_pages, args.seed
     )
     print("Benchmark dataset generation complete!")
 

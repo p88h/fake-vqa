@@ -6,7 +6,7 @@ from unsloth import FastVisionModel  # FastLanguageModel for LLMs
 import torch
 
 from generate_benchmark import generate_benchmark_dataset
-from fakevqa_benchmark import question_bank
+from questions import QUESTIONS
 
 # 4bit pre quantized models we support for 4x faster downloading + no OOMs.
 fourbit_models = [
@@ -64,7 +64,7 @@ def convert_to_conversation(entry):
     conversation = [
         {
             "role": "user",
-            "content": [{"type": "text", "text": question_bank["qa"][0]}] + pages,
+            "content": [{"type": "text", "text": QUESTIONS["qa"].prompt}] + pages,
         },
         {"role": "assistant", "content": answers},
     ]

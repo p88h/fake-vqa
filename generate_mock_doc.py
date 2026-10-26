@@ -49,7 +49,10 @@ def generate_filler_text(num_paragraphs=5):
 
 
 def create_page_image(paragraphs, page_num, total_pages, title, docid):
-    """Create a single page image with the given text and elements."""
+    """Create a single page image with the given text and elements.
+
+    Returns the image and its text layer: every line actually drawn, in reading order.
+    """
     # Create a white background image
     img = Image.new("RGB", (728, 1036), "white")
     draw = ImageDraw.Draw(img)
@@ -63,6 +66,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
     # Add header
     header = f"{title} - Research Report, Page {page_num} of {total_pages}"
     draw.text((50, 50), header, fill=BLACK, font=font)
+    lines = [header]
 
     # Add footer
     footer = f"Document-ID: {docid}"
@@ -75,6 +79,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
         for line in wrapped_text:
             if y_position < 900:  # Leave space for footer
                 draw.text((50, y_position), line, fill=color, font=font)
+                lines.append(line)
                 y_position += 20
         y_position += 20
 
@@ -93,8 +98,14 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
             outline=BLACK,
         )
 
-        # Generate and draw 5 random bars
+        # Add chart title
+        chart_title = fake.job()
+        draw.text((chart_x, chart_y - 20), chart_title, fill=BLACK, font=font)
+        lines.append(chart_title)
+
+        # Generate and draw random bars
         num_bars = random.randint(3, 10)
+        labels = []
         bar_width = chart_width // (num_bars * 2)
         for i in range(num_bars):
             bar_height = random.randint(20, chart_height - 20)
@@ -110,10 +121,11 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
             # Add value label
             value = str(bar_height)
             draw.text((bar_x, bar_y + bar_height + 15), value, fill=BLACK, font=font)
+            labels.append(value)
+        lines.append(" ".join(labels))
 
-        # Add chart title
-        draw.text((chart_x, chart_y - 20), fake.job(), fill=BLACK, font=font)
-    return img
+    lines.append(footer)
+    return img, "\n".join(lines)
 
 
 def generate_mock_document(num_pages=3, output_dir="mock_docs", prefix="doc", pbar=None) -> dict:
@@ -145,6 +157,7 @@ def generate_mock_document(num_pages=3, output_dir="mock_docs", prefix="doc", pb
 
     # Generate pages
     files = []
+    pages_text = []
     for page_num in range(1, num_pages + 1):
         # Generate filler text for this page
         paragraphs = generate_filler_text()
@@ -162,18 +175,20 @@ def generate_mock_document(num_pages=3, output_dir="mock_docs", prefix="doc", pb
                 paragraphs.insert(middle_pos + i, table_item)
 
         # Create page image
-        img = create_page_image(paragraphs, page_num, num_pages, title, docid)
+        img, text = create_page_image(paragraphs, page_num, num_pages, title, docid)
 
         # Save the image with the specified prefix
         file_path = os.path.join(output_dir, f"{prefix}_page_{page_num:03d}.jpg")
         img.save(file_path)
         files.append(file_path)
+        pages_text.append(text)
         if pbar:
             pbar.update(1)
 
     return {
         "docid": docid,
         "files": files,
+        "pages_text": pages_text,
         "title": title,
         "needle": needle_value,
         "table": table_values,

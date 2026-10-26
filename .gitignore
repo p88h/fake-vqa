@@ -2,8 +2,11 @@
 /benchmark_docs
 /mock_docs
 /outputs
+/results
+/.venv
 /unsloth_compiled_cache
 .env
+uv.lock
 
 *.jpg
 *.json
