@@ -79,6 +79,7 @@ class VLLMLocalBackend:
                     input_tokens=len(output.prompt_token_ids or []),
                     cached_tokens=output.num_cached_tokens or 0,
                     output_tokens=len(output.outputs[0].token_ids),
+                    truncated=output.outputs[0].finish_reason == "length",
                 )
             )
             if on_done:

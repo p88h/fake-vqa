@@ -31,6 +31,8 @@ class Result:
     input_tokens: int = 0
     cached_tokens: int = 0
     output_tokens: int = 0
+    # Generation stopped at max_tokens
+    truncated: bool = False
 
 
 @dataclass

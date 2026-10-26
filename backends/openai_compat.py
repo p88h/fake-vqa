@@ -139,11 +139,13 @@ class OpenAICompatBackend:
             on_done()
         usage = response.usage
         details = usage.prompt_tokens_details if usage else None
+        choice = response.choices[0]
         return Result(
-            text=_message_text(response.choices[0].message.content),
+            text=_message_text(choice.message.content),
             input_tokens=usage.prompt_tokens if usage else 0,
             cached_tokens=(details.cached_tokens or 0) if details else 0,
             output_tokens=usage.completion_tokens if usage else 0,
+            truncated=choice.finish_reason == "length",
         )
 
     async def generate(self, requests: list[Request], on_done=None) -> list[Result]:

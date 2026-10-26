@@ -66,17 +66,7 @@ def qa_expected(entry: dict) -> list[str]:
     return [str(entry[x]) for x in ["docid", "title", "needle"]] + [str(entry["table"][1])]
 
 
-def evaluate_answers(texts: list[str], entries: list[dict]) -> list[dict]:
-    """Score `qa` answers against the generated ground truth; prints a summary."""
-    total_score = 0
-    score_markers = "😖😕😐😊😍"
-    print("Scoring answers: ", end="")
-    answers = []
-    for text, entry in zip(texts, entries, strict=True):
-        expected = qa_expected(entry)
-        score = sum(es in text for es in expected)
-        total_score += score
-        answers.append({"answer": text.split("\n"), "expected": expected, "score": score})
-        print(score_markers[score], end="")
-    print(f"\nAverage score: {total_score * 100 // (len(texts) * 4)}%")
-    return answers
+def score_answer(text: str, entry: dict) -> dict:
+    """Score a `qa` answer: how many of the 4 expected values it contains."""
+    expected = qa_expected(entry)
+    return {"expected": expected, "score": sum(es in text for es in expected)}

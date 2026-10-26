@@ -14,8 +14,13 @@ from tqdm import tqdm
 from backends import BACKENDS, Backend, BackendOptions, Page, Request, Result, make_backend
 from generate_benchmark import generate_benchmark_dataset
 from ocr import OCR_MODES, text_layers
-from questions import QUESTIONS, Question, evaluate_answers, scaling_questions
+from questions import QUESTIONS, Question, scaling_questions, score_answer
 from scan import SCAN_PRESETS
+from transcription import compare, total
+
+
+# Transcription questions, scored against the generated text layer
+TRANSCRIPTION_TAGS = {"ocr", "ocr_long"}
 
 
 class Benchmark:
@@ -26,6 +31,7 @@ class Benchmark:
         docs: list[list[Page]],
         output_dir: pathlib.Path,
         max_tokens: int,
+        ocr: str | None = None,
     ):
         self.backend = backend
         # Output token cap for quality runs (questions with a larger budget keep theirs)
@@ -34,13 +40,22 @@ class Benchmark:
         self.entries = entries
         self.docs = docs
         self.output_dir = output_dir
+        # A text layer from an OCR model (not the oracle passthrough) gets scored separately
+        self.ocr_model = bool(ocr) and not ocr.startswith("passthrough")
+        self.ocr = ocr
         self.metrics: list[dict] = []
+        # Per-document outputs and scores of quality runs, by tag
+        self.outputs: dict[str, list[dict]] = {}
 
     async def run(
-        self, tag: str, question: Question, docs: list[list[Page]] | None = None, ignore_eos: bool = False
+        self, tag: str, question: Question, indices: list[int] | None = None, ignore_eos: bool = False
     ) -> list[Result]:
-        """Ask `question` about every document in `docs` (default: all) and record a metrics row."""
-        docs = self.docs if docs is None else docs
+        """Ask `question` about the documents at `indices` (default: all) and record a metrics row.
+
+        Quality runs (without ignore_eos) are also scored, where the question has a score.
+        """
+        indices = list(range(len(self.docs))) if indices is None else indices
+        docs = [self.docs[i] for i in indices]
         prompts = question.prompt if isinstance(question.prompt, list) else [question.prompt]
         # A list of questions shares the token budget, one request per question
         max_tokens = question.max_tokens // len(prompts)
@@ -67,64 +82,117 @@ class Benchmark:
             f"Time: {run_time:.02f} seconds, per page: {run_time / num_pages:.02f} seconds; "
             f"input tokens: {input_tokens} ({cached_tokens} cached), output tokens: {output_tokens}"
         )
-        self.record(tag, docs, run_time, input_tokens, cached_tokens, output_tokens, len(requests))
+        row = self.record(tag, docs, run_time, input_tokens, cached_tokens, output_tokens, len(requests))
+        if not ignore_eos:
+            row |= self.evaluate(tag, indices, results, len(prompts))
         return results
 
     async def run_grouped(self, tag: str, question: Question, ignore_eos: bool = False):
         """Run `question` separately for each group of documents with the same page count."""
-        for _, group in itertools.groupby(self.docs, key=len):
+        for _, group in itertools.groupby(range(len(self.docs)), key=lambda i: len(self.docs[i])):
             await self.run(tag, question, list(group), ignore_eos)
 
-    def record(self, tag, docs, run_time, input_tokens=0, cached_tokens=0, output_tokens=0, num_requests=0):
-        num_pages = sum(len(pages) for pages in docs)
-        self.metrics.append(
-            {
-                "backend": self.backend.name,
-                "tag": tag,
-                "page_count": round(num_pages / len(docs), 1),
-                "num_prompts": len(docs),
-                "num_requests": num_requests,
-                "total_pages": num_pages,
-                "run_time": round(run_time, 2),
-                "time_per_page": round(run_time / num_pages, 2),
-                "input_tokens": input_tokens,
-                "cached_tokens": cached_tokens,
-                "output_tokens": output_tokens,
-            }
-            | self.backend.stats()
-        )
+    def evaluate(self, tag: str, indices: list[int], results: list[Result], per_doc: int) -> dict:
+        """Keep per-document outputs, scoring them where `tag` has a score; returns overall scores."""
+        outputs, qa_scores, edits, copy_edits = [], [], [], []
+        for n, i in enumerate(indices):
+            entry = self.entries[i]
+            doc_results = results[n * per_doc : (n + 1) * per_doc]
+            output = {"docid": entry["docid"], "title": entry["title"], "pages": len(entry["files"])}
+            if per_doc > 1:
+                output["texts"] = [r.text for r in doc_results]
+                outputs.append(output)
+                continue
+            result = doc_results[0]
+            output |= {"text": result.text, "truncated": result.truncated}
+            if tag == "qa":
+                output |= score_answer(result.text, entry)
+                qa_scores.append(output["score"])
+            elif tag in TRANSCRIPTION_TAGS:
+                counts = compare("\n".join(entry["pages_text"]), result.text)
+                edits.append(counts)
+                output |= counts.rates()
+                if self.ocr_model:
+                    # How faithfully the model copied the OCR text it was given
+                    layer = "\n".join(page.text for page in self.docs[i])
+                    copy_counts = compare(layer, result.text)
+                    copy_edits.append(copy_counts)
+                    output |= copy_counts.rates("copy_")
+            outputs.append(output)
+        self.outputs.setdefault(tag, []).extend(outputs)
 
-    def save_metrics(self, scenario: str, tag: str):
+        scores = {}
+        if qa_scores:
+            score_markers = "😖😕😐😊😍"
+            scores["qa_score"] = round(100 * sum(qa_scores) / (4 * len(qa_scores)), 1)
+            print(f"QA: {''.join(score_markers[s] for s in qa_scores)} {scores['qa_score']}%")
+        if edits:
+            scores |= total(edits).rates()
+            scores["truncated"] = sum(o["truncated"] for o in outputs)
+            summary = f"Transcription: CER {scores['cer']}%, WER {scores['wer']}%"
+            if copy_edits:
+                scores |= total(copy_edits).rates("copy_")
+                summary += f" (copying the OCR text: CER {scores['copy_cer']}%, WER {scores['copy_wer']}%)"
+            print(summary + f"; {scores['truncated']} of {len(outputs)} hit the token limit")
+        return scores
+
+    def record_text_layer(self, run_time: float):
+        """Record the text layer extraction; an OCR model's layer is scored against the generated text."""
+        row = self.record(f"ocr-{self.ocr}", self.docs, run_time)
+        if not self.ocr_model:
+            return
+        outputs, edits = [], []
+        for entry, pages in zip(self.entries, self.docs, strict=True):
+            layer = "\n".join(page.text for page in pages)
+            counts = compare("\n".join(entry["pages_text"]), layer)
+            edits.append(counts)
+            outputs.append(
+                {"docid": entry["docid"], "title": entry["title"], "pages": len(pages), "text": layer}
+                | counts.rates()
+            )
+        self.outputs["text-layer"] = outputs
+        row |= total(edits).rates()
+        print(f"Text layer ({self.ocr}): CER {row['cer']}%, WER {row['wer']}%")
+
+    def record(self, tag, docs, run_time, input_tokens=0, cached_tokens=0, output_tokens=0, num_requests=0) -> dict:
+        num_pages = sum(len(pages) for pages in docs)
+        row = {
+            "backend": self.backend.name,
+            "tag": tag,
+            "page_count": round(num_pages / len(docs), 1),
+            "num_prompts": len(docs),
+            "num_requests": num_requests,
+            "total_pages": num_pages,
+            "run_time": round(run_time, 2),
+            "time_per_page": round(run_time / num_pages, 2),
+            "input_tokens": input_tokens,
+            "cached_tokens": cached_tokens,
+            "output_tokens": output_tokens,
+        } | self.backend.stats()
+        self.metrics.append(row)
+        return row
+
+    def save(self, scenario: str, tag: str):
+        """Save the metrics, and the per-document outputs of each question."""
         path = self.output_dir / f"metrics_{scenario}_{tag}.csv"
         fields = list(dict.fromkeys(k for row in self.metrics for k in row))
         with open(path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
             writer.writerows(self.metrics)
-        print(f"Metrics saved to {path}")
-
-    def save_texts(self, name: str, results: list[Result]):
-        texts = [
-            {"docid": entry["docid"], "title": entry["title"], "text": result.text}
-            for entry, result in zip(self.entries, results, strict=True)
-        ]
-        self.save_json(name, texts)
-
-    def save_json(self, name: str, data):
-        with open(self.output_dir / name, "w") as f:
-            json.dump(data, f, indent=2)
+        for name, outputs in self.outputs.items():
+            with open(self.output_dir / f"outputs_{name}.json", "w") as f:
+                json.dump(outputs, f, indent=2, ensure_ascii=False)
+        print(f"Metrics and outputs saved to {self.output_dir}")
 
 
 async def composite_scenario(bench: Benchmark):
-    """Throughput with simple questions, then mixed QA (scored), summarization and OCR."""
+    """Simple questions grouped by size, then QA, summarization and OCR over all documents."""
     await bench.run_grouped("simple", QUESTIONS["simple"])
-
-    results = await bench.run("qa", QUESTIONS["qa"])
-    bench.save_json("answers.json", evaluate_answers([r.text for r in results], bench.entries))
-
-    bench.save_texts("summaries.json", await bench.run("summarize", QUESTIONS["summarize"]))
-    bench.save_texts("ocr.json", await bench.run("ocr", QUESTIONS["ocr"]))
-    bench.save_metrics("composite", "all")
+    await bench.run("qa", QUESTIONS["qa"])
+    await bench.run("summarize", QUESTIONS["summarize"])
+    await bench.run("ocr", QUESTIONS["ocr"])
+    bench.save("composite", "all")
 
 
 def selected_tags(tag: str) -> list[str]:
@@ -135,16 +203,14 @@ async def grouped_scenario(bench: Benchmark, tag: str):
     """Selected questions, run separately per document size."""
     for t in selected_tags(tag):
         await bench.run_grouped(t, QUESTIONS[t])
-    bench.save_metrics("grouped", tag)
+    bench.save("grouped", tag)
 
 
 async def mixed_scenario(bench: Benchmark, tag: str):
     """Selected questions, run over all document sizes at once."""
     for t in selected_tags(tag):
-        results = await bench.run(t, QUESTIONS[t])
-        if t == "qa":
-            bench.save_json("answers.json", evaluate_answers([r.text for r in results], bench.entries))
-    bench.save_metrics("mixed", tag)
+        await bench.run(t, QUESTIONS[t])
+    bench.save("mixed", tag)
 
 
 async def throughput_scenario(bench: Benchmark, tag: str):
@@ -152,7 +218,7 @@ async def throughput_scenario(bench: Benchmark, tag: str):
     for t in selected_tags(tag):
         await bench.run_grouped(t, QUESTIONS[t], ignore_eos=True)
         await bench.run(t, QUESTIONS[t], ignore_eos=True)
-    bench.save_metrics("throughput", tag)
+    bench.save("throughput", tag)
 
 
 async def scaling_scenario(bench: Benchmark):
@@ -162,7 +228,7 @@ async def scaling_scenario(bench: Benchmark):
         await bench.run_grouped(t, q, ignore_eos=True)
     for t, q in questions.items():
         await bench.run(t, q, ignore_eos=True)
-    bench.save_metrics("scaling", "qa_multi")
+    bench.save("scaling", "qa_multi")
 
 
 async def prepare_documents(entries: list[dict], ocr: str | None) -> tuple[list[list[Page]], float | None]:
@@ -219,9 +285,9 @@ async def main(args):
     entries.sort(key=lambda e: len(e["files"]))
     docs, ocr_time = await prepare_documents(entries, args.ocr)
 
-    bench = Benchmark(backend, entries, docs, output_dir, args.max_tokens)
+    bench = Benchmark(backend, entries, docs, output_dir, args.max_tokens, args.ocr)
     if ocr_time is not None:
-        bench.record(f"ocr-{args.ocr}", docs, ocr_time)
+        bench.record_text_layer(ocr_time)
 
     try:
         if args.scenario == "composite":

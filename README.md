@@ -121,7 +121,7 @@ All HTTP backends receive the same OpenAI chat request: page images (base64 data
   - Mixed test with summarization
   - Mixed test with OCR
 - **Grouped**: Tests performance on documents grouped by page count
-- **Mixed**: Tests performance on a mix of different document sizes (scores `qa` answers)
+- **Mixed**: Tests performance on a mix of different document sizes
 - **Throughput**: Grouped and mixed runs generating up to the token limit (`ignore_eos`, where supported)
 - **Scaling**: 1 to 200 separate questions per document, sharing the document prefix
 
@@ -129,10 +129,15 @@ All HTTP backends receive the same OpenAI chat request: page images (base64 data
 
 Results go to `results/<backend>_<model>[_ocr-<mode>][_scan-<scan>]/`:
 - `pages/`: The generated page images and `benchmark_dataset.json` with the ground truth
-- `metrics_{scenario}_{tag}.csv`: Per run: backend, question tag, average page count, number of documents and requests, total pages, run time, time per page, input / cached / output tokens (and peak memory for `vllm-local`). With `--ocr`, the first row is the text layer extraction time.
-- `answers.json`: The model's answers for QA questions, with the expected values and score
-- `summaries.json`: The model's summaries for summarization tasks
-- `ocr.json`: The extracted text from documents
+- `metrics_{scenario}_{tag}.csv`: Per run: backend, question tag, average page count, number of documents and requests, total pages, run time, time per page, input / cached / output tokens (and peak memory for `vllm-local`), plus the scores below. With `--ocr`, the first row is the text layer extraction (time, and its CER / WER for an OCR model).
+- `outputs_{tag}.json`: Per document: the model's output, whether it hit the token limit, and its scores. `outputs_text-layer.json` holds the OCR model's text layer.
+
+#### Scores
+
+Runs that are not throughput measurements (no `ignore_eos`) are scored where the question allows:
+- `qa`: `qa_score`, the share of the 4 expected values (document ID, title, keyword, parameter B) found in the answers.
+- `ocr`, `ocr_long` (transcription): character and word error rates, `cer` / `wer` in %, against the text actually drawn on the pages, and `truncated`, the number of answers that hit the token limit. Both texts are normalized first: markdown syntax (headings, emphasis, tables, code fences, image references, escapes) and our page separators are removed, dashes and quotes unified, and whitespace collapsed, so line breaks don't count; case and punctuation do. Rates are total edits over total reference length, and can exceed 100% when a model adds text.
+- With an OCR model (`--ocr mistral`) the extraction is two steps, and gets three scores: the text layer row's `cer` / `wer` (the OCR model alone), `cer` / `wer` on the transcription (end to end), and `copy_cer` / `copy_wer` (how faithfully the model copied the OCR text it was given). With page images, or the oracle text layer (`--ocr passthrough`), there is a single step and a single score.
 
 ## Project Structure
 
@@ -141,6 +146,7 @@ Results go to `results/<backend>_<model>[_ocr-<mode>][_scan-<scan>]/`:
 - `fakevqa_benchmark.py`: Runs the benchmark scenarios against a backend
 - `questions.py`: Question bank and answer scoring
 - `ocr.py`: Text layers for `--ocr` (oracle passthrough, Mistral OCR)
+- `transcription.py`: Text normalization and CER / WER scoring of transcriptions
 - `scan.py`: Scan look (resolution, skew, blur, noise, JPEG)
 - `backends/`: Model backends (`openai_compat.py` for all HTTP APIs, `vllm_local.py` for in-process vLLM)
 - `fakevqa_finetune.py`: LoRA fine-tuning of Qwen2-VL on the QA task (Unsloth)
