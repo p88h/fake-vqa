@@ -1,8 +1,11 @@
+import functools
 import random
 import os
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
 from faker import Faker
+
+from scan import Scanner
 
 # Initialize Faker for generating realistic text
 fake = Faker()
@@ -48,29 +51,41 @@ def generate_filler_text(num_paragraphs=5):
     return paragraphs
 
 
-def create_page_image(paragraphs, page_num, total_pages, title, docid):
+@functools.cache
+def load_font(size):
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", size)
+    except OSError:
+        return ImageFont.load_default(size)
+
+
+def create_page_image(paragraphs, page_num, total_pages, title, docid, scale=1.0):
     """Create a single page image with the given text and elements.
 
-    Returns the image and its text layer: every line actually drawn, in reading order.
+    The layout is in 88 DPI page coordinates (728 x 1036); `scale` renders it at a
+    higher (or lower) resolution. Returns the image and its text layer: every line
+    actually drawn, in reading order.
     """
     # Create a white background image
-    img = Image.new("RGB", (728, 1036), "white")
+    img = Image.new("RGB", (round(728 * scale), round(1036 * scale)), "white")
     draw = ImageDraw.Draw(img)
+    font = load_font(round(14 * scale))
 
-    # Load a font (using default for now)
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 14)
-    except:
-        font = ImageFont.load_default(14)
+    def draw_text(xy, s, fill=BLACK):
+        draw.text((round(xy[0] * scale), round(xy[1] * scale)), s, fill=fill, font=font)
+
+    def draw_rect(box, **kwargs):
+        box = [(round(x * scale), round(y * scale)) for x, y in box]
+        draw.rectangle(box, width=max(1, round(scale)), **kwargs)
 
     # Add header
     header = f"{title} - Research Report, Page {page_num} of {total_pages}"
-    draw.text((50, 50), header, fill=BLACK, font=font)
+    draw_text((50, 50), header)
     lines = [header]
 
     # Add footer
     footer = f"Document-ID: {docid}"
-    draw.text((50, 1000), footer, fill=BLACK, font=font)
+    draw_text((50, 1000), footer)
 
     # Add main content
     y_position = 100
@@ -78,7 +93,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
         wrapped_text = textwrap.wrap(text, width=80)
         for line in wrapped_text:
             if y_position < 900:  # Leave space for footer
-                draw.text((50, y_position), line, fill=color, font=font)
+                draw_text((50, y_position), line, fill=color)
                 lines.append(line)
                 y_position += 20
         y_position += 20
@@ -92,7 +107,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
         chart_y = y_position + 20
 
         # Draw chart background
-        draw.rectangle(
+        draw_rect(
             [(chart_x, chart_y), (chart_x + chart_width + 50, chart_y + chart_height)],
             fill="white",
             outline=BLACK,
@@ -100,7 +115,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
 
         # Add chart title
         chart_title = fake.job()
-        draw.text((chart_x, chart_y - 20), chart_title, fill=BLACK, font=font)
+        draw_text((chart_x, chart_y - 20), chart_title)
         lines.append(chart_title)
 
         # Generate and draw random bars
@@ -112,7 +127,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
             bar_x = chart_x + (i * bar_width * 2) + bar_width
             bar_y = chart_y + chart_height - bar_height
 
-            draw.rectangle(
+            draw_rect(
                 [(bar_x, bar_y), (bar_x + bar_width, chart_y + chart_height - 10)],
                 fill=COLOR_PALETTE[(i + random.randint(0, 19)) % 20],
                 outline=BLACK,
@@ -120,7 +135,7 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
 
             # Add value label
             value = str(bar_height)
-            draw.text((bar_x, bar_y + bar_height + 15), value, fill=BLACK, font=font)
+            draw_text((bar_x, bar_y + bar_height + 15), value)
             labels.append(value)
         lines.append(" ".join(labels))
 
@@ -128,13 +143,16 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid):
     return img, "\n".join(lines)
 
 
-def generate_mock_document(num_pages=3, output_dir="mock_docs", prefix="doc", pbar=None) -> dict:
+def generate_mock_document(
+    num_pages=3, output_dir="mock_docs", prefix="doc", pbar=None, scanner: Scanner | None = None
+) -> dict:
     """Generate a complete mock document with specified number of pages.
 
     Args:
         num_pages (int): Number of pages to generate
         output_dir (str): Directory to save the generated images
         prefix (str): Prefix for the generated image filenames
+        scanner (Scanner): Resolution and scan degradation of the saved images (default: clean)
     """
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -175,11 +193,15 @@ def generate_mock_document(num_pages=3, output_dir="mock_docs", prefix="doc", pb
                 paragraphs.insert(middle_pos + i, table_item)
 
         # Create page image
-        img, text = create_page_image(paragraphs, page_num, num_pages, title, docid)
+        scale = scanner.params.render_scale if scanner else 1.0
+        img, text = create_page_image(paragraphs, page_num, num_pages, title, docid, scale)
 
         # Save the image with the specified prefix
         file_path = os.path.join(output_dir, f"{prefix}_page_{page_num:03d}.jpg")
-        img.save(file_path)
+        if scanner:
+            scanner.save(img, file_path)
+        else:
+            img.save(file_path)
         files.append(file_path)
         pages_text.append(text)
         if pbar:

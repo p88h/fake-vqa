@@ -15,11 +15,21 @@ from backends import BACKENDS, Backend, BackendOptions, Page, Request, Result, m
 from generate_benchmark import generate_benchmark_dataset
 from ocr import OCR_MODES, text_layers
 from questions import QUESTIONS, Question, evaluate_answers, scaling_questions
+from scan import SCAN_PRESETS
 
 
 class Benchmark:
-    def __init__(self, backend: Backend, entries: list[dict], docs: list[list[Page]], output_dir: pathlib.Path):
+    def __init__(
+        self,
+        backend: Backend,
+        entries: list[dict],
+        docs: list[list[Page]],
+        output_dir: pathlib.Path,
+        max_tokens: int,
+    ):
         self.backend = backend
+        # Output token cap for quality runs (questions with a larger budget keep theirs)
+        self.max_tokens = max_tokens
         # entries and docs are parallel lists, sorted by page count
         self.entries = entries
         self.docs = docs
@@ -34,11 +44,15 @@ class Benchmark:
         prompts = question.prompt if isinstance(question.prompt, list) else [question.prompt]
         # A list of questions shares the token budget, one request per question
         max_tokens = question.max_tokens // len(prompts)
+        if not ignore_eos:
+            # The question budgets define throughput workloads; elsewhere they are only
+            # caps, so be generous to not truncate answers (or thinking).
+            max_tokens = max(max_tokens, self.max_tokens)
         requests = [Request(pages, p, max_tokens, ignore_eos) for pages in docs for p in prompts]
         num_pages = sum(len(pages) for pages in docs)
         print(
             f"Processing {len(docs)} documents / {num_pages} pages / {len(requests)} requests "
-            f"with {tag} question (max output: {question.max_tokens} tokens) ..."
+            f"with {tag} question (max output: {max_tokens} tokens per request) ..."
         )
         start_time = time.perf_counter()
         with tqdm(total=len(requests), desc=tag, leave=False) as pbar:
@@ -189,20 +203,23 @@ async def main(args):
     )
     backend = make_backend(args.model, options)
 
+    run_name = backend.name + (f"+ocr-{args.ocr}" if args.ocr else "") + (f"+scan-{args.scan}" if args.scan else "")
+    output_dir = pathlib.Path(args.output_dir) / re.sub(r"[^\w.-]+", "_", run_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     entries = generate_benchmark_dataset(
+        output_dir=args.data_dir or str(output_dir / "pages"),
         max_pages=args.max_pages,
         min_pages=args.min_pages,
         num_pages=args.total_pages,
         seed=args.seed,
+        scan=args.scan,
     )
     # Sort by page count so that documents of the same size can be grouped
     entries.sort(key=lambda e: len(e["files"]))
     docs, ocr_time = await prepare_documents(entries, args.ocr)
 
-    run_name = backend.name + (f"+ocr-{args.ocr}" if args.ocr else "")
-    output_dir = pathlib.Path(args.output_dir) / re.sub(r"[^\w.-]+", "_", run_name)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    bench = Benchmark(backend, entries, docs, output_dir)
+    bench = Benchmark(backend, entries, docs, output_dir, args.max_tokens)
     if ocr_time is not None:
         bench.record(f"ocr-{args.ocr}", docs, ocr_time)
 
@@ -251,7 +268,19 @@ if __name__ == "__main__":
         metavar="KEY=VALUE",
         help="Extra vLLM engine argument for vllm-local (value parsed as JSON if possible). Repeatable.",
     )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=4000,
+        help="Output token cap per request, unless the question's own budget is larger. "
+        "Throughput and scaling runs (ignore_eos) generate exactly the question budgets.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for the dataset and model.")
+    parser.add_argument(
+        "--scan",
+        help=f"Make pages look scanned: preset ({', '.join(SCAN_PRESETS)}) and/or key=value "
+        "overrides of dpi, oversample, rotation, blur, noise, jpeg_quality; e.g. medium,dpi=150.",
+    )
     parser.add_argument("--max-pages", "-m", type=int, default=32, help="Maximum pages per document.")
     parser.add_argument("--min-pages", "-n", type=int, default=4, help="Minimum pages per document.")
     parser.add_argument("--total-pages", "-p", type=int, default=None, help="Total pages in the benchmark.")
@@ -270,4 +299,7 @@ if __name__ == "__main__":
         help="Scenario to run.",
     )
     parser.add_argument("--output-dir", "-o", default="results", help="Directory for metrics and outputs.")
+    parser.add_argument(
+        "--data-dir", help="Where to generate the page images (default: <output dir>/<run>/pages)."
+    )
     asyncio.run(main(parser.parse_args()))

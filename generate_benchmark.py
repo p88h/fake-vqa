@@ -5,10 +5,11 @@ import random
 
 from tqdm import tqdm
 from generate_mock_doc import fake, generate_mock_document
+from scan import SCAN_PRESETS, Scanner, parse_scan
 
 
 def generate_benchmark_dataset(
-    output_dir="benchmark_docs", max_pages=32, min_pages=4, num_pages=None, seed=None
+    output_dir="benchmark_docs", max_pages=32, min_pages=4, num_pages=None, seed=None, scan=None
 ):
     """Generate a benchmark dataset with the following structure:
     - 1 x max_pages page document
@@ -22,7 +23,10 @@ def generate_benchmark_dataset(
     The rough distribution of pages per document will remain the same.
     The actual number of pages may be adjusted due to rounding.
     If seed is provided, the generated dataset is reproducible.
+    `scan` sets resolution and scan degradation (see scan.parse_scan); with the same
+    seed, the document content is the same for every scan setting.
     """
+    scanner = Scanner(parse_scan(scan), seed)
     if seed is not None:
         random.seed(seed)
         fake.seed_instance(seed)
@@ -76,6 +80,7 @@ def generate_benchmark_dataset(
                     output_dir=output_dir,
                     prefix=prefix,
                     pbar=pbar,
+                    scanner=scanner,
                 )
                 entries.append(result)
 
@@ -105,12 +110,17 @@ def main():
         "--num_pages", type=int, default=None, help="Total number of pages to generate"
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
+    parser.add_argument(
+        "--scan",
+        default=None,
+        help=f"Scan look: preset ({', '.join(SCAN_PRESETS)}) and/or key=value overrides, e.g. medium,dpi=150",
+    )
     args = parser.parse_args()
     print(
         f"Generating benchmark dataset with {args.min_pages} to {args.max_pages} pages per document"
     )
     _ = generate_benchmark_dataset(
-        args.output_dir, args.max_pages, args.min_pages, args.num_pages, args.seed
+        args.output_dir, args.max_pages, args.min_pages, args.num_pages, args.seed, args.scan
     )
     print("Benchmark dataset generation complete!")
 

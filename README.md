@@ -15,6 +15,7 @@ This project generates synthetic documents with known content and evaluates Visi
   - Headers and footers
   - Optional bar charts
   - A ground-truth text layer (exactly what was drawn on each page)
+  - Optional scan look: resolution (DPI), skew, blur, sensor noise, JPEG artifacts
 - Create benchmark datasets with varying document sizes
 - Evaluate VLMs on document understanding tasks, either from page images or from a text layer (OCR or oracle)
 - Measure run time, time per page, input / cached / output tokens, and answer accuracy
@@ -55,7 +56,20 @@ This will create:
 - 4 x 8 page documents
 - 8 x 4 page documents
 
-Options: `--output_dir`, `--max_pages`, `--min_pages`, `--num_pages` (total pages) and `--seed` (reproducible dataset).
+Options: `--output_dir`, `--max_pages`, `--min_pages`, `--num_pages` (total pages), `--seed` (reproducible dataset) and `--scan` (see below).
+
+### Scan Look
+
+`--scan` makes pages look scanned, as a preset and/or `key=value` overrides, e.g. `--scan medium` or `--scan heavy,dpi=150`:
+
+| Preset | rotation (±°) | blur (px) | noise (σ, 0–255) | JPEG quality |
+|---|---:|---:|---:|---:|
+| `clean` (default) | 0 | 0 | 0 | 75 |
+| `light` | 0.5 | 0.4 | 6 | 60 |
+| `medium` | 1.5 | 0.7 | 12 | 40 |
+| `heavy` | 3 | 1.0 | 20 | 25 |
+
+All presets keep the default page resolution, 88 DPI (A4 at 728 x 1036 pixels), so token counts stay comparable; set `dpi` to change it. Pages are rendered at `dpi * oversample` (2 for the degraded presets) and box-filtered down, then skewed (keeping the page size; the margins absorb the corners), blurred, given noise and JPEG-compressed. Degradation takes about 30 ms per page at 88 DPI and 0.3 s at 300 DPI. With the same `--seed`, the document content is identical across scan settings, so scores are comparable. The oracle text layer (`--ocr passthrough`) is unaffected.
 
 ### Running the Benchmark
 
@@ -90,11 +104,14 @@ All HTTP backends receive the same OpenAI chat request: page images (base64 data
 - `--ocr`: Extract from a text layer instead of page images:
   - `passthrough`: the oracle text layer recorded by the generator
   - `mistral[:<ocr model>]`: Mistral OCR (`mistral-ocr-latest` by default), one PDF per document
+- `--max-tokens`: Output token cap per request (default 4000; `ocr_long` keeps its 8000). Throughput and scaling runs generate exactly the question budgets instead (`ignore_eos`).
 - `--seed`: Random seed for the dataset (and the model, where supported)
+- `--scan`: Scan look of the page images (see [Scan Look](#scan-look))
 - `--max-pages` or `-m`, `--min-pages` or `-n`, `--total-pages` or `-p`: Dataset shape
 - `--tag` or `-t`: Question(s) for grouped/mixed/throughput, comma-separated or `all`: `simple`, `qa`, `summarize`, `ocr`, `ocr_long`, `qa_batched`, `qa_multi`
 - `--scenario` or `-s`: `composite`, `grouped`, `mixed`, `throughput`, `scaling`
 - `--output-dir` or `-o`: Where results go (default `results/`)
+- `--data-dir`: Where to generate the page images (default `results/<run>/pages/`, so parallel runs don't collide)
 
 #### Benchmark Scenarios
 
@@ -110,7 +127,8 @@ All HTTP backends receive the same OpenAI chat request: page images (base64 data
 
 #### Output Files
 
-Results go to `results/<backend>_<model>[_ocr-<mode>]/`:
+Results go to `results/<backend>_<model>[_ocr-<mode>][_scan-<scan>]/`:
+- `pages/`: The generated page images and `benchmark_dataset.json` with the ground truth
 - `metrics_{scenario}_{tag}.csv`: Per run: backend, question tag, average page count, number of documents and requests, total pages, run time, time per page, input / cached / output tokens (and peak memory for `vllm-local`). With `--ocr`, the first row is the text layer extraction time.
 - `answers.json`: The model's answers for QA questions, with the expected values and score
 - `summaries.json`: The model's summaries for summarization tasks
@@ -123,6 +141,7 @@ Results go to `results/<backend>_<model>[_ocr-<mode>]/`:
 - `fakevqa_benchmark.py`: Runs the benchmark scenarios against a backend
 - `questions.py`: Question bank and answer scoring
 - `ocr.py`: Text layers for `--ocr` (oracle passthrough, Mistral OCR)
+- `scan.py`: Scan look (resolution, skew, blur, noise, JPEG)
 - `backends/`: Model backends (`openai_compat.py` for all HTTP APIs, `vllm_local.py` for in-process vLLM)
 - `fakevqa_finetune.py`: LoRA fine-tuning of Qwen2-VL on the QA task (Unsloth)
 
