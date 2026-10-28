@@ -14,7 +14,7 @@ from tqdm import tqdm
 from backends import BACKENDS, Backend, BackendOptions, Page, Request, Result, make_backend
 from generate_benchmark import generate_benchmark_dataset
 from ocr import OCR_MODES, text_layers
-from questions import QUESTIONS, Question, scaling_questions, score_answer
+from questions import QUESTIONS, Question, question_prompts, scaling_questions, score_answer
 from scan import SCAN_PRESETS
 from transcription import compare, total
 
@@ -56,14 +56,19 @@ class Benchmark:
         """
         indices = list(range(len(self.docs))) if indices is None else indices
         docs = [self.docs[i] for i in indices]
-        prompts = question.prompt if isinstance(question.prompt, list) else [question.prompt]
+        doc_prompts = [question_prompts(question, self.entries[i]) for i in indices]
+        per_doc = len(doc_prompts[0])
         # A list of questions shares the token budget, one request per question
-        max_tokens = question.max_tokens // len(prompts)
+        max_tokens = question.max_tokens // per_doc
         if not ignore_eos:
             # The question budgets define throughput workloads; elsewhere they are only
             # caps, so be generous to not truncate answers (or thinking).
             max_tokens = max(max_tokens, self.max_tokens)
-        requests = [Request(pages, p, max_tokens, ignore_eos) for pages in docs for p in prompts]
+        requests = [
+            Request(pages, p, max_tokens, ignore_eos)
+            for pages, prompts in zip(docs, doc_prompts, strict=True)
+            for p in prompts
+        ]
         num_pages = sum(len(pages) for pages in docs)
         print(
             f"Processing {len(docs)} documents / {num_pages} pages / {len(requests)} requests "
@@ -84,7 +89,7 @@ class Benchmark:
         )
         row = self.record(tag, docs, run_time, input_tokens, cached_tokens, output_tokens, len(requests))
         if not ignore_eos:
-            row |= self.evaluate(tag, indices, results, len(prompts))
+            row |= self.evaluate(tag, indices, results, per_doc)
         return results
 
     async def run_grouped(self, tag: str, question: Question, ignore_eos: bool = False):
@@ -107,7 +112,7 @@ class Benchmark:
             output |= {"text": result.text, "truncated": result.truncated}
             if tag == "qa":
                 output |= score_answer(result.text, entry)
-                qa_scores.append(output["score"])
+                qa_scores.append((output["score"], output["max_score"]))
             elif tag in TRANSCRIPTION_TAGS:
                 counts = compare("\n".join(entry["pages_text"]), result.text)
                 edits.append(counts)
@@ -124,8 +129,14 @@ class Benchmark:
         scores = {}
         if qa_scores:
             score_markers = "😖😕😐😊😍"
-            scores["qa_score"] = round(100 * sum(qa_scores) / (4 * len(qa_scores)), 1)
-            print(f"QA: {''.join(score_markers[s] for s in qa_scores)} {scores['qa_score']}%")
+            found, possible = sum(s for s, _ in qa_scores), sum(m for _, m in qa_scores)
+            scores["qa_score"] = round(100 * found / possible, 1)
+            markers = "".join(score_markers[round(4 * s / m)] for s, m in qa_scores)
+            print(f"QA: {markers} {scores['qa_score']}%")
+            # Per-field accuracy, e.g. qa_docid, qa_chart
+            for field in dict.fromkeys(f for o in outputs for f in o.get("found", {})):
+                hits = [o["found"][field] for o in outputs if field in o.get("found", {})]
+                scores[f"qa_{field}"] = round(100 * sum(hits) / len(hits), 1)
         if edits:
             scores |= total(edits).rates()
             scores["truncated"] = sum(o["truncated"] for o in outputs)
@@ -231,14 +242,16 @@ async def scaling_scenario(bench: Benchmark):
     bench.save("scaling", "qa_multi")
 
 
-async def prepare_documents(entries: list[dict], ocr: str | None) -> tuple[list[list[Page]], float | None]:
+async def prepare_documents(
+    entries: list[dict], ocr: str | None, figures: bool = True
+) -> tuple[list[list[Page]], float | None]:
     """Turn entries into pages; with `ocr`, attach each page's text layer. Returns (docs, OCR time)."""
     if not ocr:
         return [[Page(f) for f in entry["files"]] for entry in entries], None
     start_time = time.perf_counter()
     num_pages = sum(len(entry["files"]) for entry in entries)
     with tqdm(total=num_pages, desc=f"Text layer ({ocr})") as pbar:
-        layers = await text_layers(entries, ocr, on_done=pbar.update)
+        layers = await text_layers(entries, ocr, figures, on_done=pbar.update)
     run_time = time.perf_counter() - start_time
     docs = [
         [Page(f, text) for f, text in zip(entry["files"], layer, strict=True)]
@@ -269,7 +282,8 @@ async def main(args):
     )
     backend = make_backend(args.model, options)
 
-    run_name = backend.name + (f"+ocr-{args.ocr}" if args.ocr else "") + (f"+scan-{args.scan}" if args.scan else "")
+    ocr_name = args.ocr + ("-nofigures" if not args.ocr_figures and args.ocr.startswith("mistral") else "") if args.ocr else ""
+    run_name = backend.name + (f"+ocr-{ocr_name}" if args.ocr else "") + (f"+scan-{args.scan}" if args.scan else "")
     output_dir = pathlib.Path(args.output_dir) / re.sub(r"[^\w.-]+", "_", run_name)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -283,7 +297,7 @@ async def main(args):
     )
     # Sort by page count so that documents of the same size can be grouped
     entries.sort(key=lambda e: len(e["files"]))
-    docs, ocr_time = await prepare_documents(entries, args.ocr)
+    docs, ocr_time = await prepare_documents(entries, args.ocr, args.ocr_figures)
 
     bench = Benchmark(backend, entries, docs, output_dir, args.max_tokens, args.ocr)
     if ocr_time is not None:
@@ -326,6 +340,13 @@ if __name__ == "__main__":
         "--ocr",
         help=f"Extract from a text layer instead of page images: {', '.join(OCR_MODES)} "
         "(oracle text from the generator), or mistral[:<ocr model>].",
+    )
+    parser.add_argument(
+        "--ocr-figures",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="With --ocr mistral, annotate figures (charts) and put their text in the text layer "
+        "instead of image placeholders. Slower and billed above plain OCR.",
     )
     parser.add_argument(
         "--engine-arg",

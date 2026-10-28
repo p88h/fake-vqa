@@ -13,7 +13,7 @@ This project generates synthetic documents with known content and evaluates Visi
   - Known "needle" text (for information retrieval testing)
   - Tables with known values
   - Headers and footers
-  - Optional bar charts
+  - Bar charts where a page has room: a title, an axis description (the series name, unique within a document) and the value on top of each bar. Their ground truth text is the title and a single-row table, `| Units sold | 70 | 74 | 65 |`
   - A ground-truth text layer (exactly what was drawn on each page)
   - Optional scan look: resolution (DPI), skew, blur, sensor noise, JPEG artifacts
 - Create benchmark datasets with varying document sizes
@@ -103,7 +103,7 @@ All HTTP backends receive the same OpenAI chat request: page images (base64 data
 - `--reasoning-effort`: Defaults to `none` (thinking off, this is extraction). Models that reject `none` fall back to their lowest supported effort. `default` leaves it to the model.
 - `--ocr`: Extract from a text layer instead of page images:
   - `passthrough`: the oracle text layer recorded by the generator
-  - `mistral[:<ocr model>]`: Mistral OCR (`mistral-ocr-latest` by default), one PDF per document
+  - `mistral[:<ocr model>]`: Mistral OCR (`mistral-ocr-latest` by default), one PDF per document. Plain OCR returns charts as image placeholders, so their text is lost; by default each figure is also annotated by a vision model (bbox annotations) and the placeholder replaced by its text, a chart as `| <series> | <values> |`. `--no-ocr-figures` turns this off (faster, cheaper).
 - `--max-tokens`: Output token cap per request (default 4000; `ocr_long` keeps its 8000). Throughput and scaling runs generate exactly the question budgets instead (`ignore_eos`).
 - `--seed`: Random seed for the dataset (and the model, where supported)
 - `--scan`: Scan look of the page images (see [Scan Look](#scan-look))
@@ -135,7 +135,7 @@ Results go to `results/<backend>_<model>[_ocr-<mode>][_scan-<scan>]/`:
 #### Scores
 
 Runs that are not throughput measurements (no `ignore_eos`) are scored where the question allows:
-- `qa`: `qa_score`, the share of the 4 expected values (document ID, title, keyword, parameter B) found in the answers.
+- `qa`: `qa_score`, the share of the expected values found in the answers, and the accuracy per field as `qa_docid`, `qa_title`, `qa_keyword`, `qa_param_b` and `qa_chart`. The chart field asks for the bar values of a chart named by its series (e.g. "Units sold") and needs them in order; documents without a chart skip it.
 - `ocr`, `ocr_long` (transcription): character and word error rates, `cer` / `wer` in %, against the text actually drawn on the pages, and `truncated`, the number of answers that hit the token limit. Both texts are normalized first: markdown syntax (headings, emphasis, tables, code fences, image references, escapes) and our page separators are removed, dashes and quotes unified, and whitespace collapsed, so line breaks don't count; case and punctuation do. Rates are total edits over total reference length, and can exceed 100% when a model adds text.
 - With an OCR model (`--ocr mistral`) the extraction is two steps, and gets three scores: the text layer row's `cer` / `wer` (the OCR model alone), `cer` / `wer` on the transcription (end to end), and `copy_cer` / `copy_wer` (how faithfully the model copied the OCR text it was given). With page images, or the oracle text layer (`--ocr passthrough`), there is a single step and a single score.
 

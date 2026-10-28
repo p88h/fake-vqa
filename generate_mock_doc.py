@@ -39,6 +39,36 @@ COLOR_PALETTE = [
 ]
 
 
+# Axis descriptions (series names) for the bar charts, short enough to fit left of the
+# bars. A document uses each at most once until all are used, so they identify its charts.
+AXIS_DESCRIPTIONS = [
+    "Revenue (k$)",
+    "Units sold",
+    "Headcount",
+    "Visits (k)",
+    "Defects",
+    "Latency (ms)",
+    "Output (t)",
+    "Orders",
+    "Share (%)",
+    "Score",
+    "Returns",
+    "Downloads (k)",
+    "Tickets",
+    "Uptime (h)",
+    "Margin (%)",
+    "Shipments",
+    "Signups",
+    "Energy (MWh)",
+    "Incidents",
+    "Leads",
+    "Cost (k$)",
+    "Throughput",
+    "Inventory",
+    "Claims",
+]
+
+
 def generate_filler_text(num_paragraphs=5):
     """Generate semi-random research-like text."""
     paragraphs = []
@@ -59,12 +89,15 @@ def load_font(size):
         return ImageFont.load_default(size)
 
 
-def create_page_image(paragraphs, page_num, total_pages, title, docid, scale=1.0):
+def create_page_image(paragraphs, page_num, total_pages, title, docid, scale=1.0, axes=None):
     """Create a single page image with the given text and elements.
 
     The layout is in 88 DPI page coordinates (728 x 1036); `scale` renders it at a
-    higher (or lower) resolution. Returns the image and its text layer: every line
-    actually drawn, in reading order.
+    higher (or lower) resolution. Returns the image, its text layer (every line
+    actually drawn, in reading order) and the bar chart drawn on it (or None). The chart's
+    axis description is taken from `axes` (consumed), or chosen at random.
+    A chart's text is its title and a single-row table with the axis description
+    as row header and the value of each bar: `| Units sold | 70 | 74 | 65 |`.
     """
     # Create a white background image
     img = Image.new("RGB", (round(728 * scale), round(1036 * scale)), "white")
@@ -73,6 +106,9 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid, scale=1.0
 
     def draw_text(xy, s, fill=BLACK):
         draw.text((round(xy[0] * scale), round(xy[1] * scale)), s, fill=fill, font=font)
+
+    def text_width(s):
+        return draw.textlength(s, font=font) / scale
 
     def draw_rect(box, **kwargs):
         box = [(round(x * scale), round(y * scale)) for x, y in box]
@@ -99,16 +135,19 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid, scale=1.0
         y_position += 20
 
     # Add a simple bar chart if there's space
+    chart = None
     if y_position < 800:  # Leave enough space for the chart
-        # Chart dimensions
-        chart_width = 600
+        # Chart dimensions: the axis description on the left, then the bars
+        chart_width = 650
         chart_height = 150
         chart_x = 50
         chart_y = y_position + 20
+        bars_x = chart_x + 150
+        bars_width = chart_width - 160
 
         # Draw chart background
         draw_rect(
-            [(chart_x, chart_y), (chart_x + chart_width + 50, chart_y + chart_height)],
+            [(chart_x, chart_y), (chart_x + chart_width, chart_y + chart_height)],
             fill="white",
             outline=BLACK,
         )
@@ -118,13 +157,17 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid, scale=1.0
         draw_text((chart_x, chart_y - 20), chart_title)
         lines.append(chart_title)
 
-        # Generate and draw random bars
+        # Add the axis description, left of the bars and vertically centered
+        axis = axes.pop() if axes else random.choice(AXIS_DESCRIPTIONS)
+        draw_text((chart_x + 10, chart_y + chart_height // 2 - 8), axis)
+
+        # Generate and draw random bars, each with its value on top
         num_bars = random.randint(3, 10)
-        labels = []
-        bar_width = chart_width // (num_bars * 2)
+        values = []
+        bar_width = bars_width // (num_bars * 2)
         for i in range(num_bars):
             bar_height = random.randint(20, chart_height - 20)
-            bar_x = chart_x + (i * bar_width * 2) + bar_width
+            bar_x = bars_x + (i * bar_width * 2) + bar_width // 2
             bar_y = chart_y + chart_height - bar_height
 
             draw_rect(
@@ -133,14 +176,14 @@ def create_page_image(paragraphs, page_num, total_pages, title, docid, scale=1.0
                 outline=BLACK,
             )
 
-            # Add value label
             value = str(bar_height)
-            draw_text((bar_x, bar_y + bar_height + 15), value)
-            labels.append(value)
-        lines.append(" ".join(labels))
+            draw_text((bar_x + (bar_width - text_width(value)) / 2, bar_y - 17), value)
+            values.append(bar_height)
+        lines.append("| " + " | ".join([axis, *map(str, values)]) + " |")
+        chart = {"title": chart_title, "axis": axis, "values": values}
 
     lines.append(footer)
-    return img, "\n".join(lines)
+    return img, "\n".join(lines), chart
 
 
 def generate_mock_document(
@@ -176,6 +219,8 @@ def generate_mock_document(
     # Generate pages
     files = []
     pages_text = []
+    charts = []
+    axes = []
     for page_num in range(1, num_pages + 1):
         # Generate filler text for this page
         paragraphs = generate_filler_text()
@@ -194,7 +239,13 @@ def generate_mock_document(
 
         # Create page image
         scale = scanner.params.render_scale if scanner else 1.0
-        img, text = create_page_image(paragraphs, page_num, num_pages, title, docid, scale)
+        if not axes:
+            axes = random.sample(AXIS_DESCRIPTIONS, len(AXIS_DESCRIPTIONS))
+        img, text, chart = create_page_image(
+            paragraphs, page_num, num_pages, title, docid, scale, axes
+        )
+        if chart:
+            charts.append({"page": page_num} | chart)
 
         # Save the image with the specified prefix
         file_path = os.path.join(output_dir, f"{prefix}_page_{page_num:03d}.jpg")
@@ -214,6 +265,7 @@ def generate_mock_document(
         "title": title,
         "needle": needle_value,
         "table": table_values,
+        "charts": charts,
     }
 
 

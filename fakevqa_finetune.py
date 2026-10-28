@@ -6,7 +6,7 @@ from unsloth import FastVisionModel  # FastLanguageModel for LLMs
 import torch
 
 from generate_benchmark import generate_benchmark_dataset
-from questions import QUESTIONS
+from questions import qa_expected, qa_prompt
 
 # 4bit pre quantized models we support for 4x faster downloading + no OOMs.
 fourbit_models = [
@@ -54,17 +54,12 @@ def convert_to_conversation(entry):
     pages = [
         {"type": "image", "image": PIL.Image.open(file)} for file in entry["files"]
     ]
-    expected = [
-        "docid: " + entry["docid"],
-        "title: " + entry["title"],
-        "keyword: " + str(entry["needle"]),
-        "param_b: " + str(entry["table"][1]),
-    ]
+    expected = [f"{field}: {value}" for field, value in qa_expected(entry).items()]
     answers = [{"type": "text", "text": f"value: {val}"} for val in expected]
     conversation = [
         {
             "role": "user",
-            "content": [{"type": "text", "text": QUESTIONS["qa"].prompt}] + pages,
+            "content": [{"type": "text", "text": qa_prompt(entry)}] + pages,
         },
         {"role": "assistant", "content": answers},
     ]

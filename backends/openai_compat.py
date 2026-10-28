@@ -23,6 +23,8 @@ class Preset:
     # Extra request fields that disable thinking when reasoning_effort is "none".
     no_thinking: dict = field(default_factory=dict)
     seed_field: str = "seed"
+    # Per-request timeout (retried): generous for local servers, short enough to retry hung API calls
+    timeout: float = 1800
 
 
 PRESETS = {
@@ -36,8 +38,8 @@ PRESETS = {
         ignore_eos=True,
         no_thinking={"chat_template_kwargs": {"enable_thinking": False}},
     ),
-    "mistral": Preset("https://api.mistral.ai/v1", "MISTRAL_API_KEY", 8, seed_field="random_seed"),
-    "openai": Preset("https://api.openai.com/v1", "OPENAI_API_KEY", 8),
+    "mistral": Preset("https://api.mistral.ai/v1", "MISTRAL_API_KEY", 8, seed_field="random_seed", timeout=300),
+    "openai": Preset("https://api.openai.com/v1", "OPENAI_API_KEY", 8, timeout=300),
 }
 
 
@@ -76,7 +78,7 @@ class OpenAICompatBackend:
             base_url=options.base_url or self.preset.base_url,
             api_key=api_key or "none",
             max_retries=5,
-            timeout=1800,
+            timeout=self.preset.timeout,
         )
         self.semaphore = asyncio.Semaphore(options.concurrency or self.preset.concurrency)
         self._images: dict[str, str] = {}
